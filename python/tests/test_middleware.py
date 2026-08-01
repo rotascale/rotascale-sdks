@@ -887,3 +887,284 @@ def test_langchain_a_failed_llm_call_is_recorded():
     call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
     assert call["error"] == "RuntimeError"
     assert "rate limited" in call["error_message"]
+
+
+# --- LangGraph --------------------------------------------------------------
+#
+# subhadipmitra@: A graph is not a chain. Flattening a traversal into a list of
+# model calls throws away which PATH was taken, and two runs with identical
+# calls and different paths are different behaviours.
+
+
+def _node(handler, name, run_id):
+    handler.on_chain_start({}, {}, run_id=run_id,
+                           metadata={"langgraph_node": name})
+    handler.on_chain_end({}, run_id=run_id)
+
+
+def test_langgraph_records_the_traversal_in_order():
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        for i, name in enumerate(["retrieve", "summarise", "review"]):
+            _node(handler, name, f"r{i}")
+
+    assert handler.path == ["retrieve", "summarise", "review"]
+    nodes = [s["payload"]["node"] for s in steps
+             if s["kind"] == "plan" and "node" in s["payload"]]
+    assert nodes == ["retrieve", "summarise", "review"]
+
+
+def test_langgraph_a_loop_reads_as_a_loop_not_as_n_unexplained_calls():
+    """The number that turns forty calls into "it went round forty times"."""
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        _node(handler, "plan", "r0")
+        for i in range(4):
+            _node(handler, "analyse", f"loop{i}")
+
+    visits = [s["payload"]["visit"] for s in steps
+              if s["kind"] == "plan" and s["payload"].get("node") == "analyse"]
+    assert visits == [1, 2, 3, 4]
+    assert handler.loops == {"analyse": 4}
+
+
+def test_langgraph_internal_nodes_are_not_recorded():
+    """`__start__` and friends are machinery the customer did not write, and
+    recording them buries the graph they did."""
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        _node(handler, "__start__", "a")
+        _node(handler, "real_work", "b")
+        _node(handler, "__end__", "c")
+
+    assert handler.path == ["real_work"]
+
+
+def test_langgraph_still_records_model_calls_like_the_chain_handler():
+    """It extends the LangChain handler; it must not replace what that does."""
+    from types import SimpleNamespace as NS
+
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        handler.on_llm_end(
+            NS(llm_output={"model_name": "gpt-4o", "token_usage": {}},
+               generations=[[NS(text="hi")]]), run_id="r")
+
+    assert any(s["kind"] == "llm_call" for s in steps)
+
+
+def test_langgraph_inherits_the_thread_binding_fix():
+    """LangGraph fires callbacks from the same thread pool, so the same trap
+    applies and the same solution has to hold."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_node, handler, "worker_node", "r1").result()
+
+    assert handler.path == ["worker_node"]
+    assert any(s["payload"].get("node") == "worker_node"
+               for s in steps if s["kind"] == "plan")
+
+
+def test_langgraph_summarise_records_the_shape_of_the_whole_run():
+    from rotascale.middleware import watch_langgraph
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = watch_langgraph()
+        _node(handler, "a", "1")
+        _node(handler, "b", "2")
+        _node(handler, "a", "3")
+        handler.summarise()
+
+    summary = next(s["payload"] for s in steps
+                   if s["kind"] == "plan" and s["payload"].get("traversal_complete"))
+    assert summary["path"] == ["a", "b", "a"]
+    assert summary["loops"] == {"a": 2}
+    assert summary["distinct_nodes"] == 2
+
+
+# --- ADK: the one middleware that can actually refuse ----------------------
+
+
+class _AdkAgent:
+    """Just somewhere for ADK to hang its callbacks."""
+
+
+def test_adk_without_a_grant_observes_and_refuses_nothing():
+    """subhadipmitra@: A customer who believes `watch_adk(agent)` alone enforces
+    something has bought a control they do not have."""
+    from rotascale.middleware import watch_adk
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        agent = watch_adk(_AdkAgent())
+        result = agent.before_tool_callback(
+            tool=SimpleNamespace(name="issue_refund"), args={})
+
+    assert result is None                       # None means "carry on" in ADK
+    assert any(s["kind"] == "tool_call" for s in steps)
+
+
+def test_adk_with_a_grant_cancels_a_refused_tool_call():
+    """The load-bearing one. ADK's before-callback can short-circuit, so what
+    we return BECOMES the tool result and the tool never runs."""
+    from rotascale.middleware import watch_adk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/authorize":
+            return httpx.Response(200, json={
+                "outcome": "deny", "allowed": False,
+                "reason": "outside scope", "findings": [],
+                "enforcement_mode": "enforce"})
+        if request.url.path == "/v1/trajectories":
+            return httpx.Response(201, json={"id": "trj_1"})
+        return httpx.Response(201, json={"id": "stp_1", "ordinal": 0})
+
+    rs = Rotascale("http://test", token="t")
+    rs._http = httpx.Client(transport=httpx.MockTransport(handler),
+                            base_url="http://test")
+
+    with rs.witness("agt_1"):
+        agent = watch_adk(_AdkAgent(), grant="grt_1")
+        result = agent.before_tool_callback(
+            tool=SimpleNamespace(name="issue_refund"), args={})
+
+    assert result is not None, "a refusal must cancel the call"
+    assert result["_rotascale"]["blocked"] is True
+    assert "BLOCKED by Rotascale" in result["error"]
+
+
+def test_adk_enforcement_fails_closed_when_authorisation_is_unavailable():
+    """Capture fails open; enforcement does not. An ungoverned action is worse
+    than a delayed one."""
+    from rotascale.middleware import watch_adk
+
+    def dead(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/trajectories":
+            return httpx.Response(201, json={"id": "trj_1"})
+        raise httpx.ConnectError("control plane down")
+
+    rs = Rotascale("http://test", token="t")
+    rs._http = httpx.Client(transport=httpx.MockTransport(dead),
+                            base_url="http://test")
+
+    with rs.witness("agt_1"):
+        agent = watch_adk(_AdkAgent(), grant="grt_1")
+        result = agent.before_tool_callback(
+            tool=SimpleNamespace(name="issue_refund"), args={})
+
+    assert result is not None
+    assert "authorisation unavailable" in result["error"]
+
+
+# --- CrewAI -----------------------------------------------------------------
+
+
+def test_crewai_a_delegation_says_it_is_only_witnessed():
+    """subhadipmitra@: `governed=False` is not a placeholder. Recording a
+    hand-off as governed — when nothing attenuates and nothing would refuse —
+    would be the fabrication this codebase exists to avoid."""
+    from rotascale.middleware import record_delegation
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        record_delegation(SimpleNamespace(role="researcher"),
+                          SimpleNamespace(role="writer"), task="draft the brief")
+
+    step = next(s for s in steps if s["kind"] == "delegation")
+    assert step["source_ref"] == "writer"
+    assert step["payload"]["delegated_by"] == "researcher"
+    assert step["payload"]["governed"] is False
+
+
+# --- Strands ----------------------------------------------------------------
+
+
+def test_strands_reports_the_tool_manifest_it_can_already_read():
+    """The registry is right there. A human retyping a manifest digest is
+    recording a guess."""
+    from rotascale.middleware import watch_strands
+    posted: list[tuple[str, dict]] = []
+    client = make_client([])
+    real_post = client._post
+
+    def record(path, body, **kw):
+        posted.append((path, body))
+        return {} if "provenance" in path else real_post(path, body, **kw)
+
+    client._post = record
+
+    def lookup_order():
+        """Look up an order by id."""
+
+    with client.witness("agt_1"):
+        watch_strands(SimpleNamespace(tools=[lookup_order]))
+
+    provenance = [b for p, b in posted if "provenance" in p]
+    assert provenance
+    assert "lookup_order" in provenance[0]["tool_manifest"]
+
+
+# --- AutoGen ----------------------------------------------------------------
+
+
+def test_autogen_records_each_turn_with_its_speaker():
+    from rotascale.middleware import watch_autogen
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        chat = watch_autogen(SimpleNamespace(
+            max_round=10, append=lambda *a, **kw: None))
+        chat.append({"name": "planner", "content": "let us begin"}, None)
+        chat.append({"name": "critic", "content": "not so fast"}, None)
+
+    turns = [s["payload"] for s in steps
+             if s["kind"] == "plan" and "speaker" in s["payload"]]
+    assert [t["speaker"] for t in turns] == ["planner", "critic"]
+    assert [t["turn"] for t in turns] == [1, 2]
+
+
+def test_autogen_hitting_the_round_cap_is_a_finding_not_an_ending():
+    """It was stopped by a limit, not by a decision, and those are different.
+    One of the clearest illustrations of why a budget is not a rate limit."""
+    from rotascale.middleware import watch_autogen
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        chat = watch_autogen(SimpleNamespace(
+            max_round=2, append=lambda *a, **kw: None))
+        chat.append({"name": "a", "content": "x"}, None)
+        chat.append({"name": "b", "content": "y"}, None)
+
+    finding = next(s["payload"] for s in steps
+                   if s["kind"] == "plan"
+                   and s["payload"].get("finding") == "group_chat_hit_round_cap")
+    assert finding["turns"] == 2

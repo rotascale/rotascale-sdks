@@ -106,23 +106,65 @@ about what to do next. Pass `raise_on_refusal=False` to branch on outcomes yours
 
 ## Middlewares
 
-Duck-typed — none imports the library it wraps, so the SDK never drags a
-provider dependency into your lockfile.
+One line per framework. Every one is duck-typed — none imports the library it
+wraps — so `pip install rotascale` never drags a provider dependency into your
+lockfile. A governance library that forces a version conflict is one that does
+not get installed.
 
 ```python
-from rotascale.middleware import watch_openai, watch_anthropic, watch_mcp
+from rotascale.middleware import (
+    watch_openai, watch_anthropic, watch_gemini, watch_bedrock,
+    watch_langchain, watch_langgraph, watch_adk, watch_crew,
+    watch_strands, watch_autogen, watch_mcp,
+)
 
-client  = watch_openai(OpenAI())            # or Azure, Together, Groq, vLLM, Ollama…
-claude  = watch_anthropic(Anthropic())
-session = watch_mcp(mcp_session)
+client = watch_openai(OpenAI())        # or Azure, Together, Groq, vLLM, Ollama…
+claude = watch_anthropic(Anthropic())
+gemini = watch_gemini(genai.Client())  # or Vertex AI
+bedrock = watch_bedrock(boto3.client("bedrock-runtime"))
 ```
 
-Wrap once; every call inside a `witness` block lands on the trajectory. No
-handle to thread through your call sites.
+LangChain and LangGraph are **callback handlers**, because that is the
+extension point those frameworks provide. Build them **inside** the witness
+block — LangChain fires callbacks from a thread pool, and a handler built
+outside would silently record nothing:
 
-`capture_content=False` records shape and metadata only — model, latency,
-tokens, finish reason, tool names — and no prompt or completion text. Evidence a
-customer refuses to enable is worth nothing.
+```python
+with rs.witness(agent, ref=ticket) as t:
+    chain.invoke(x, config={"callbacks": [watch_langchain()]})
+    graph.invoke(state, config={"callbacks": [watch_langgraph()]})
+```
+
+### What each one adds beyond the model call
+
+| | |
+|---|---|
+| **Gemini** | thinking tokens, which are billed separately and invisible in the other counts; a safety block, which returns no candidates at all |
+| **Bedrock** | the inference region out of `us.anthropic.…`, which is what an auditor asks about under a residency regime |
+| **LangGraph** | the node traversal, with visit counts — a loop reads as a loop, not as forty unexplained calls |
+| **ADK** | **enforcement.** See below |
+| **CrewAI** | the hand-off between agents |
+| **Strands** | the tool manifest, read off the registry rather than retyped |
+| **AutoGen** | each turn, and a round cap hit without terminating — recorded as a finding, because it was stopped by a limit rather than by a decision |
+
+### ADK can actually refuse
+
+Every other middleware here **observes**. ADK's `before_tool_callback` can
+return a value that short-circuits the call, so a refusal stops the tool in the
+tool path:
+
+```python
+watch_adk(agent, grant=GRANT)     # tool calls are authorised before they run
+```
+
+Without `grant=` it observes like the others. With it, ADK joins
+`rotascale-mcp-proxy` as one of two places a refusal is a control rather than a
+record of one. Worth being precise about, because the difference is what a
+customer is buying.
+
+`capture_content=False` on any of them records shape and metadata only — model,
+latency, tokens, finish reason, tool names — and no prompt or completion text.
+Evidence a customer refuses to enable is worth nothing.
 
 ### MCP tool-poisoning detection
 
