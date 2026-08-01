@@ -1,0 +1,170 @@
+# Release a package to PyPI from a tag.
+#
+# subhadipmitra@: Written after two releases went out from a laptop, and one of
+# them landed on the wrong PyPI account because the token that got used was
+# chosen from a section name in ~/.pypirc rather than from a verified identity.
+#
+# Trusted publishing removes that failure mode rather than mitigating it. The
+# identity comes from THIS repository via OIDC, so there is no long-lived token
+# to leak, to mislabel, or to reach for by mistake. The `~/.pypirc` tokens stop
+# being part of the release path at all.
+#
+#   git tag python-v0.2.1 && git push --tags   ->  publishes rotascale
+#   git tag mcp-v0.1.1    && git push --tags   ->  publishes rotascale-mcp
+#
+# ONE-TIME SETUP, per package, on PyPI:
+#   https://pypi.org/manage/project/<name>/settings/publishing/
+#     owner:       rotascale
+#     repository:  rotascale-sdks
+#     workflow:    release.yml
+#     environment: pypi
+# Until that exists the publish step fails closed with an auth error, which is
+# the correct behaviour: no token means no accidental upload.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "python-v*"
+      - "mcp-v*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package to dry-run (builds and verifies, publishes nothing)"
+        required: true
+        type: choice
+        options: [python, mcp]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false      # never cancel a half-finished upload
+
+jobs:
+  verify:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    outputs:
+      directory: ${{ steps.target.outputs.directory }}
+      name: ${{ steps.target.outputs.name }}
+      version: ${{ steps.target.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Resolve which package this tag is for
+        id: target
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF#refs/tags/}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            kind="${{ inputs.package }}"
+            tag_version=""
+          elif [[ "$ref" == python-v* ]]; then
+            kind=python; tag_version="${ref#python-v}"
+          elif [[ "$ref" == mcp-v* ]]; then
+            kind=mcp;    tag_version="${ref#mcp-v}"
+          else
+            echo "::error::tag $ref matches no package prefix"; exit 1
+          fi
+
+          case "$kind" in
+            python) directory=python;     name=rotascale ;;
+            mcp)    directory=mcp-python; name=rotascale-mcp ;;
+          esac
+
+          version=$(grep -m1 '^version = ' "$directory/pyproject.toml" | cut -d'"' -f2)
+
+          # subhadipmitra@: The gate that stops a surprise. A tag saying v0.3.0
+          # against a pyproject saying 0.2.0 would publish 0.2.0 under a name
+          # implying otherwise — and a PyPI version can never be replaced, so
+          # there is no undo.
+          if [ -n "$tag_version" ] && [ "$tag_version" != "$version" ]; then
+            echo "::error::tag says $tag_version, $directory/pyproject.toml says $version"
+            exit 1
+          fi
+
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $name $version from $directory"
+
+      - name: Lint
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: uv run --with ruff ruff check src/ tests/
+
+      - name: Tests
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: uv run --with pytest --with pytest-asyncio pytest -q
+
+      - name: Build
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: uv build
+
+      - name: Metadata is acceptable to PyPI
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: uv run --with twine twine check dist/*
+
+      # subhadipmitra@: The check that catches the real failure. A package can
+      # import perfectly from its source tree — because the source tree is on
+      # sys.path — and be missing a subpackage from the wheel. Both of ours have
+      # one (`rotascale.middleware`), which is exactly that shape.
+      - name: Install the WHEEL into a clean environment and import it
+        working-directory: ${{ steps.target.outputs.directory }}
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --quiet dist/*.whl
+          if [ "${{ steps.target.outputs.name }}" = "rotascale" ]; then
+            /tmp/clean/bin/python - <<'PY'
+          import importlib.util, rotascale
+          from rotascale import Rotascale, Agent, Decision
+          from rotascale.middleware import watch_openai, watch_anthropic, watch_mcp
+          print("imported", rotascale.__version__)
+          # The SDK must never drag a provider dependency into a lockfile.
+          for lib in ("openai", "anthropic", "langchain", "mcp"):
+              assert importlib.util.find_spec(lib) is None, f"{lib} leaked in"
+          print("no provider dependencies leaked")
+          PY
+          else
+            /tmp/clean/bin/python - <<'PY'
+          from importlib.metadata import entry_points, version
+          import rotascale_mcp
+          print("imported", version("rotascale-mcp"))
+          # The console scripts ARE the delivery mechanism: an MCP host launches
+          # `rotascale-mcp` and nothing else. Unwired, the package installs
+          # cleanly and is completely unusable, and no import test would notice.
+          eps = {e.name: e for e in entry_points(group="console_scripts")}
+          for name in ("rotascale-mcp", "rotascale-mcp-proxy"):
+              assert name in eps, f"{name} is not wired: {sorted(eps)}"
+              eps[name].load()
+          print("both console scripts load")
+          PY
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: ${{ steps.target.outputs.directory }}/dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: verify
+    # Only a tag publishes. workflow_dispatch builds and verifies, so a dry run
+    # can never upload by accident.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ needs.verify.outputs.name }}/${{ needs.verify.outputs.version }}/
+    permissions:
+      id-token: write        # the OIDC token IS the credential; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
