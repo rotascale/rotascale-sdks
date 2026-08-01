@@ -436,3 +436,67 @@ def test_a_raw_agent_id_still_works():
     import json
     opened = next(c for c in calls if c.url.path == "/v1/trajectories")
     assert json.loads(opened.content)["agent_id"] == "agt_pasted"
+
+
+# --- a mistyped keyword must not vanish ------------------------------------
+
+
+def test_a_typo_for_ref_is_refused_rather_than_forwarded():
+    """subhadipmitra@: `ref` is the IDEMPOTENCY KEY. Silently dropped, a retry
+    forks history instead of continuing it — and nobody finds out until they are
+    reading a trajectory list wondering why one action appears three times."""
+    client = Rotascale("http://test", api_key="rota_test_x")
+
+    # Every spelling somebody actually reaches for instead of `ref`.
+    for wrong in ("reference", "refernce", "ref_id", "idempotency_key",
+                  "correlation_id"):
+        with pytest.raises(TypeError) as exc, client.witness("agt_1", **{wrong: "TICKET-1"}):
+            pass
+        message = str(exc.value)
+        assert wrong in message
+        assert "idempotency key" in message
+        assert "forks history" in message
+
+
+def test_a_genuinely_unfamiliar_keyword_still_passes_through():
+    """Forward-compatibility is the reason **kw exists: a customer must be able
+    to pass a field a newer server understands without waiting for a release."""
+    import json
+
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/trajectories":
+            calls.append(json.loads(request.content))
+            return httpx.Response(201, json={"id": "trj_1"})
+        return httpx.Response(200, json={})
+
+    client = Rotascale("http://test", api_key="rota_test_x")
+    client._http = httpx.Client(transport=httpx.MockTransport(handler),
+                                base_url="http://test")
+
+    with client.witness("agt_1", some_future_field="value"):
+        pass
+
+    assert calls[0]["some_future_field"] == "value"
+
+
+def test_the_real_parameter_is_of_course_unaffected():
+    import json
+
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/trajectories":
+            calls.append(json.loads(request.content))
+            return httpx.Response(201, json={"id": "trj_1"})
+        return httpx.Response(200, json={})
+
+    client = Rotascale("http://test", api_key="rota_test_x")
+    client._http = httpx.Client(transport=httpx.MockTransport(handler),
+                                base_url="http://test")
+
+    with client.witness("agt_1", ref="TICKET-1"):
+        pass
+
+    assert calls[0]["external_ref"] == "TICKET-1"

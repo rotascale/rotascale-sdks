@@ -38,6 +38,7 @@ from rotascale.errors import (
 
 logger = logging.getLogger("rotascale")
 
+
 # The trajectory currently in scope. Middlewares attach steps to it without the
 # caller threading a handle through every function.
 _current: contextvars.ContextVar["Trajectory | None"] = contextvars.ContextVar(
@@ -92,6 +93,44 @@ class Decision:
         if self.policy_outcome is None:
             return any(f.startswith("would_refuse:") for f in self.findings)
         return self.policy_outcome != self.outcome
+
+
+#: Spellings that mean `ref` and are not it. Named explicitly rather than fuzzy-
+#: matched: `ref` is three characters, so difflib rates "reference" at 0.5
+#: against it and a cutoff loose enough to catch that would flag half the
+#: forward-compatible fields this parameter exists to allow.
+_MEANT_REF = {
+    "reference", "refernce", "refrence", "ref_id", "refid", "refs",
+    "external_reference", "idempotency_key", "idempotency", "trace_id",
+    "correlation_id", "request_id",
+}
+
+
+def _reject_near_misses(supplied: dict[str, Any], call: str) -> None:
+    """Refuse a keyword that plainly means `ref` and is not it.
+
+    subhadipmitra@: `**kw` exists so a customer can pass a field a newer server
+    understands without waiting for an SDK release, and that is worth keeping.
+    The cost is that a typo is silent — `witness(agent, reference="TICKET-1")`
+    sends an unknown field, the server ignores it, and `ref` stays None.
+
+    That matters more here than in an ordinary client, because `ref` is the
+    IDEMPOTENCY KEY. Silently dropped, a retry forks history instead of
+    continuing it, and nobody finds out until they are reading a trajectory
+    list wondering why one action appears three times.
+
+    Only the known confusions raise. Anything genuinely unfamiliar still passes
+    through, so forward-compatibility survives and the typo does not.
+    """
+    for name in supplied:
+        if name.lower() in _MEANT_REF:
+            raise TypeError(
+                f"{call}() got {name!r}. The parameter is `ref`, and unknown "
+                f"keywords are forwarded to the server on purpose — so this "
+                f"would have been silently ignored. `ref` is the idempotency "
+                f"key: without it a retry forks history instead of continuing "
+                f"it."
+            )
 
 
 @dataclass(frozen=True)
@@ -436,6 +475,7 @@ class Rotascale:
         rather than forking history. On an exception the trajectory closes with
         status `failed` and the error recorded — a crash is evidence too.
         """
+        _reject_near_misses(kw, "witness")
         agent_id = agent.id if isinstance(agent, Agent) else agent
         trajectory: Trajectory | None = None
         try:
