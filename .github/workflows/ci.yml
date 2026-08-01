@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Lint
+        run: uv run --with ruff ruff check src/ tests/
+
+      - name: Tests
+        run: uv run --with pytest pytest -q
+
+      # subhadipmitra@: The SDK carries no provider dependencies on purpose —
+      # a governance client that drags in the OpenAI package would force a
+      # version conflict on the customer it is meant to help. The middlewares
+      # import lazily, so importing the client must work with nothing else
+      # installed.
+      - name: Import with no optional dependencies
+        run: uv run --no-project --with . python -c "import rotascale; print(rotascale.__name__)"
