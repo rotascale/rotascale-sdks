@@ -273,7 +273,7 @@ def test_suppression_is_detectable_without_policy_outcome():
 def test_the_non_enforcing_warning_fires_once_per_grant(caplog):
     import logging
 
-    from rotascale.client import Decision, _ANNOUNCED, _warn_if_not_enforcing
+    from rotascale.client import _ANNOUNCED, Decision, _warn_if_not_enforcing
 
     _ANNOUNCED.clear()
     decision = Decision(outcome="allow", allowed=True, reason="not enforced (observe)",
