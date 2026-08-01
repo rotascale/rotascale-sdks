@@ -36,3 +36,34 @@ jobs:
       # installed.
       - name: Import with no optional dependencies
         run: uv run --no-project --with . python -c "import rotascale; print(rotascale.__name__)"
+
+  mcp:
+    name: MCP package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-python
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Lint
+        run: uv run --with ruff ruff check src/ tests/
+
+      - name: Tests
+        run: uv run --with pytest --with pytest-asyncio pytest -q
+
+      # subhadipmitra@: The console script is the entire delivery mechanism —
+      # an MCP host launches `rotascale-mcp` and nothing else. If that entry
+      # point is not wired, the package installs cleanly and is completely
+      # unusable, and no import test would notice.
+      - name: Entry point is wired
+        run: |
+          uv run --no-project --with . python -c "
+          from importlib.metadata import entry_points
+          eps = {e.name: e.value for e in entry_points(group='console_scripts')}
+          assert eps.get('rotascale-mcp') == 'rotascale_mcp.__main__:main', eps
+          print('rotascale-mcp ->', eps['rotascale-mcp'])"
