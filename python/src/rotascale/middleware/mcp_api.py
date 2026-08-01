@@ -69,21 +69,100 @@ def manifest_digest(tools: list[Any]) -> tuple[str, dict[str, str]]:
     return combined, per_tool
 
 
+def split_digests(tools: list[Any]) -> list[dict[str, Any]]:
+    """Per-tool description and schema hashes, kept APART.
+
+    subhadipmitra@: `manifest_digest` folds both into one value, which is right
+    for "did anything move" but wrong for reporting. A moved schema is a
+    version bump; a moved description while the schema holds is the signature
+    of tool poisoning — the tool still takes the same arguments, so nothing
+    breaks and nobody notices. The server records them separately so an
+    operator can tell which happened, and this is what feeds it.
+    """
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        name = str(_attr(tool, "name") or "")
+        if not name:
+            continue
+        description = str(_attr(tool, "description") or "")
+        schema = _attr(tool, "inputSchema") or _attr(tool, "input_schema") or {}
+        try:
+            schema_repr = json.dumps(schema, sort_keys=True, default=str)
+        except Exception:
+            schema_repr = str(schema)
+        out.append({
+            "name": name,
+            "description_hash": hashlib.sha256(description.encode()).hexdigest(),
+            "schema_hash": hashlib.sha256(schema_repr.encode()).hexdigest(),
+            "description": description,
+        })
+    return out
+
+
 class _WatchedSession:
-    def __init__(self, inner: Any, server: str) -> None:
+    def __init__(
+        self,
+        inner: Any,
+        server: str,
+        *,
+        transport: str | None = None,
+        endpoint: str | None = None,
+        capture_content: bool = False,
+    ) -> None:
         self._inner = inner
         self._server = server
+        self._transport = transport
+        self._endpoint = endpoint
+        self._capture_content = capture_content
         self._digest: str | None = None
         self._per_tool: dict[str, str] = {}
         self._poisoned: set[str] = set()
 
     async def list_tools(self, *args: Any, **kwargs: Any) -> Any:
         result = await self._inner.list_tools(*args, **kwargs)
+        tools = _tools_from(result)
         try:
-            self._check_manifest(_tools_from(result))
+            self._check_manifest(tools)
         except Exception:
             logger.warning("rotascale: manifest check failed", exc_info=True)
+        try:
+            self._report_manifest(tools)
+        except Exception:
+            # Capture never raises. An MCP session must keep working when the
+            # control plane is unreachable.
+            logger.warning("rotascale: could not report MCP manifest", exc_info=True)
         return result
+
+    def _report_manifest(self, tools: list[Any]) -> None:
+        """Send the manifest to Rotascale, so a change is durable.
+
+        subhadipmitra@: `_check_manifest` compares against `self._digest`, which
+        lives in this object and dies with the session. That catches an
+        injection performed WHILE an agent is connected and misses one performed
+        between runs — arguably the easier attack, since nothing is watching.
+
+        Hashes go up always; the descriptions themselves only when the customer
+        opted in. A hash is enough to prove something moved, which is the
+        control. The text is what lets a human judge whether it mattered, and
+        that is their data to share or not.
+        """
+        trajectory = current_trajectory()
+        if trajectory is None or not getattr(trajectory, "id", None):
+            return
+
+        payload = split_digests(tools)
+        if not self._capture_content:
+            for entry in payload:
+                entry.pop("description", None)
+
+        trajectory._client._post("/v1/mcp/observe", {
+            "server": self._server,
+            "transport": self._transport,
+            "endpoint": self._endpoint,
+            "tools": payload,
+            "agent_id": trajectory.agent_id,
+            "trajectory_id": trajectory.id,
+        })
 
     def _check_manifest(self, tools: list[Any]) -> None:
         digest, per_tool = manifest_digest(tools)
@@ -160,6 +239,32 @@ class _WatchedSession:
         return getattr(self._inner, name)
 
 
-def watch_mcp(session: Any, *, server: str = "default") -> Any:
-    """Wrap an MCP client session with witnessing and poisoning detection."""
-    return _WatchedSession(session, server)
+def watch_mcp(
+    session: Any,
+    *,
+    server: str = "default",
+    transport: str | None = None,
+    endpoint: str | None = None,
+    capture_content: bool = False,
+) -> Any:
+    """Wrap an MCP client session with witnessing and poisoning detection.
+
+    The server and its tools are also reported to Rotascale, so a manifest that
+    changes **between** sessions is caught — not only one that changes while an
+    agent happens to be connected.
+
+    Args:
+        server: what to call this server. Use the name from your MCP host
+            config, so a finding is recognisable without cross-referencing.
+        transport: ``"stdio"`` or ``"http"``. A local subprocess and a network
+            dependency carry different exposure, and only you know which it is.
+        endpoint: the command or URL. Recorded as evidence, never used to
+            connect.
+        capture_content: send tool descriptions as well as their hashes. Off by
+            default. Hashes prove a description moved; the text is what lets a
+            human judge whether it mattered, and that is yours to share or not.
+    """
+    return _WatchedSession(
+        session, server, transport=transport, endpoint=endpoint,
+        capture_content=capture_content,
+    )

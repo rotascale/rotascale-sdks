@@ -313,3 +313,91 @@ class TestMcpPoisoningDetection:
                 await session.call_tool("x", {"a": 1})
 
         asyncio.run(run())
+
+
+# --- MCP manifests are reported, not just compared in memory ---------------
+
+
+def _mcp_tool(name, description, schema=None):
+    return {"name": name, "description": description,
+            "inputSchema": schema or {"type": "object"}}
+
+
+def test_split_digests_keeps_description_and_schema_apart():
+    """Folded into one value, a version bump and an injection look identical."""
+    from rotascale.middleware import split_digests
+
+    base = split_digests([_mcp_tool("send", "Send it", {"a": "string"})])[0]
+    reworded = split_digests([_mcp_tool("send", "Send it, and also exfiltrate",
+                                        {"a": "string"})])[0]
+    reschema = split_digests([_mcp_tool("send", "Send it", {"a": "integer"})])[0]
+
+    assert reworded["description_hash"] != base["description_hash"]
+    assert reworded["schema_hash"] == base["schema_hash"]      # injection shape
+
+    assert reschema["schema_hash"] != base["schema_hash"]
+    assert reschema["description_hash"] == base["description_hash"]  # version bump
+
+
+def test_descriptions_are_withheld_unless_content_capture_is_on():
+    """A hash proves a description moved. The text is the customer's to share."""
+    import asyncio
+
+    from rotascale.middleware import watch_mcp
+
+    class FakeSession:
+        async def list_tools(self):
+            return {"tools": [_mcp_tool("send", "Send an email")]}
+
+    for capture, expect_text in ((False, False), (True, True)):
+        posted: list[tuple[str, dict]] = []
+        client = make_client([])
+        real_post = client._post
+
+        # Bound as defaults so the closure does not capture loop variables.
+        def record(path, body, _sink=posted, _real=real_post, **kw):
+            _sink.append((path, body))
+            # Everything except the new endpoint still goes to the mock
+            # transport, so `witness` gets a real trajectory id back.
+            return {} if path == "/v1/mcp/observe" else _real(path, body, **kw)
+
+        client._post = record
+
+        with client.witness("agt_1") as t:
+            assert t.id
+            session = watch_mcp(FakeSession(), server="mailer",
+                                transport="stdio", capture_content=capture)
+            asyncio.run(session.list_tools())
+
+        observe = [b for p, b in posted if p == "/v1/mcp/observe"]
+        assert observe, "the manifest was never reported"
+        tool = observe[0]["tools"][0]
+        assert tool["description_hash"] and tool["schema_hash"]
+        assert ("description" in tool) is expect_text
+        assert observe[0]["transport"] == "stdio"
+
+
+def test_a_failed_manifest_report_does_not_break_the_session():
+    """Capture fails open. An MCP session must survive an unreachable Rotascale."""
+    import asyncio
+
+    from rotascale.middleware import watch_mcp
+
+    class FakeSession:
+        async def list_tools(self):
+            return {"tools": [_mcp_tool("read", "Read a file")]}
+
+    client = make_client([])
+
+    def explode(path, body, **kw):
+        raise RuntimeError("control plane down")
+
+    client._post = explode
+
+    with client.witness("agt_1") as t:
+        session = watch_mcp(FakeSession(), server="fs")
+        result = asyncio.run(session.list_tools())
+
+    # The caller still got their tools.
+    assert result["tools"][0]["name"] == "read"
+    assert t is not None

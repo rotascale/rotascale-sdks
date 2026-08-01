@@ -10,7 +10,17 @@ every call site.
 """
 
 from rotascale.middleware.anthropic_api import watch_anthropic
-from rotascale.middleware.mcp_api import manifest_digest, watch_mcp
+from rotascale.middleware.mcp_api import (
+    manifest_digest,
+    split_digests,
+    watch_mcp,
+)
 from rotascale.middleware.openai_compat import watch_openai
 
-__all__ = ["manifest_digest", "watch_anthropic", "watch_mcp", "watch_openai"]
+__all__ = [
+    "manifest_digest",
+    "split_digests",
+    "watch_anthropic",
+    "watch_mcp",
+    "watch_openai",
+]
