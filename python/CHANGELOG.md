@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1 — 2026-08-02
+
+**Provenance reports itself.** The middlewares now tell Rotascale which model
+actually **served** a call, the first time they see one. The served identity,
+not the requested one — ask for `gpt-4o` and a dated build answers, and only
+what ran is evidence of what ran.
+
+Reported once per `(agent, model)`, not once per call: this is an HTTP request
+on your agent's critical path. A genuine model switch still reports.
+
+`rs.report_provenance(agent, model=…, prompt_version=…, tools=…)` is public for
+anything the middleware cannot see.
+
+Never raises. A provider middleware that broke your agent because our inventory
+was unreachable would be indefensible.
+
+Requires a Rotascale server with `#59`.
+
+First release published from CI via trusted publishing rather than from a
+laptop.
+
 ## 0.2.0 — 2026-08-01
 
 **This is a different product from 0.1.1 under the same name.** 0.1.1 was the
