@@ -6,12 +6,34 @@ Govern what your agents are allowed to do, and prove what they did.
 pip install rotascale
 ```
 
+## Authentication
+
+Issue a key in the console under **API keys**. It is shown once.
+
+```bash
+export ROTASCALE_API_KEY=rota_live_…      # or rota_test_… against a sandbox
+export ROTASCALE_URL=https://rotascale.acme.internal
+```
+
+A key names a **workspace, not an agent** — one key serves a whole fleet, and
+each agent identifies itself. So a new agent needs no new credential, and
+rotating a key does not rewrite anyone's identity.
+
+A key may record trajectories, report provenance and ask for authorisation. It
+**cannot** issue or revoke authority, change an enforcement mode, or read the
+audit trail. Those are governance acts and belong to a named person, so a
+leaked key cannot widen its own permissions — the worst it can do is write
+evidence.
+
+`token=` is also accepted for a human's OIDC session, which is what you want in
+a notebook, not in a deployed runtime.
+
 ## The whole happy path
 
 ```python
 from rotascale import Rotascale, Gated
 
-rs = Rotascale("https://rotascale.acme.internal", token=TOKEN)
+rs = Rotascale()                     # reads ROTASCALE_URL and ROTASCALE_API_KEY
 
 with rs.witness("refund-agent", ref="TICKET-88123") as t:
     t.retrieval("https://customer-attachment.example/note.pdf")   # untrusted -> taints

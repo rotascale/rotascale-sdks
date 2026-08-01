@@ -283,3 +283,79 @@ def test_the_non_enforcing_warning_fires_once_per_grant(caplog):
             _warn_if_not_enforcing(decision)
     warnings = [r for r in caplog.records if "NOT refusing anything" in r.message]
     assert len(warnings) == 1, "a per-call warning gets filtered out and protects nobody"
+
+
+# --- credentials -----------------------------------------------------------
+#
+# subhadipmitra@: An agent inside a customer runtime cannot complete an OIDC
+# flow, so the API key is the path that actually gets used. These pin the two
+# things that made the old behaviour hostile: constructing without credentials
+# and failing much later, and a typo'd key producing a bare 401.
+
+
+def test_an_api_key_authenticates():
+    client = Rotascale("http://test", api_key="rota_live_abc123")
+    assert client.http.headers["authorization"] == "Bearer rota_live_abc123"
+
+
+def test_the_api_key_can_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("ROTASCALE_API_KEY", "rota_test_fromenv")
+    client = Rotascale("http://test")
+    assert client.http.headers["authorization"] == "Bearer rota_test_fromenv"
+
+
+def test_an_oidc_token_still_works_for_a_person():
+    """A human driving the SDK against their own console session."""
+    client = Rotascale("http://test", token="an-oidc-token")
+    assert client.http.headers["authorization"] == "Bearer an-oidc-token"
+
+
+def test_the_key_wins_when_both_are_supplied():
+    """It is the credential an agent is meant to use."""
+    client = Rotascale("http://test", api_key="rota_live_key", token="tok")
+    assert client.http.headers["authorization"] == "Bearer rota_live_key"
+
+
+def test_constructing_without_credentials_fails_immediately(monkeypatch):
+    """Not on the first call, when the agent is already running.
+
+    The old behaviour built happily and then produced a bare 401 from the first
+    authorisation — a stack trace instead of a sentence, at the worst moment.
+    """
+    monkeypatch.delenv("ROTASCALE_API_KEY", raising=False)
+    monkeypatch.delenv("ROTASCALE_TOKEN", raising=False)
+
+    with pytest.raises(ValueError) as exc:
+        Rotascale("http://test")
+
+    message = str(exc.value)
+    assert "ROTASCALE_API_KEY" in message
+    # Says where to get one and what it names. "Missing credentials" would be
+    # accurate and useless.
+    assert "console" in message
+    assert "workspace rather than an agent" in message
+
+
+def test_a_key_that_is_not_a_key_is_rejected_locally(monkeypatch):
+    """The server deliberately says only 'api key rejected' and cannot tell
+    anyone their key looked malformed. So the client says it."""
+    monkeypatch.delenv("ROTASCALE_API_KEY", raising=False)
+
+    with pytest.raises(ValueError) as exc:
+        Rotascale("http://test", api_key="sk-an-openai-key-by-mistake")
+    assert "does not look like a Rotascale key" in str(exc.value)
+
+
+def test_the_readme_zero_argument_form_works(monkeypatch):
+    """`Rotascale()` with both env vars set — what the README leads with.
+
+    Pinned because the README is the first thing anyone runs, and a headline
+    example that raises is worse than no example.
+    """
+    monkeypatch.setenv("ROTASCALE_URL", "https://rotascale.acme.internal/")
+    monkeypatch.setenv("ROTASCALE_API_KEY", "rota_live_readme")
+
+    client = Rotascale()
+
+    assert client.base_url == "https://rotascale.acme.internal"   # trailing / trimmed
+    assert client.http.headers["authorization"] == "Bearer rota_live_readme"

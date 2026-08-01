@@ -214,17 +214,50 @@ class Rotascale:
         self,
         base_url: str | None = None,
         *,
+        api_key: str | None = None,
         token: str | None = None,
         timeout: float = 5.0,
         enforcement_timeout: float = 10.0,
         fail_open_enforcement: bool = False,
         workspace: str | None = None,
     ) -> None:
+        """
+        Args:
+            api_key: A workspace key, `rota_live_…` or `rota_test_…`. This is
+                how an agent authenticates. Falls back to `ROTASCALE_API_KEY`.
+            token: An OIDC bearer token. For a person driving the SDK against
+                their own console session — an agent inside a customer runtime
+                has no practical way to obtain one.
+        """
         base_url = base_url or os.environ.get("ROTASCALE_URL")
         if not base_url:
             raise ValueError("base_url is required (or set ROTASCALE_URL)")
         self.base_url = base_url.rstrip("/")
+
+        self._api_key = api_key or os.environ.get("ROTASCALE_API_KEY")
         self._token = token or os.environ.get("ROTASCALE_TOKEN")
+
+        # subhadipmitra@: Refuse at construction rather than on the first call.
+        #
+        # Without credentials this used to build happily and then fail on the
+        # first authorisation with a bare 401 naming nothing — at which point
+        # the agent is already running and somebody is reading a stack trace
+        # instead of a sentence. A misconfigured governance client should say so
+        # while the process is still starting up.
+        if not self._api_key and not self._token:
+            raise ValueError(
+                "no credentials: pass api_key='rota_live_…' or set "
+                "ROTASCALE_API_KEY. An API key is issued in the console under "
+                "API keys, and names a workspace rather than an agent — one key "
+                "serves your whole fleet."
+            )
+        if self._api_key and not self._api_key.startswith("rota_"):
+            # Caught here rather than by the server, which deliberately says
+            # only "api key rejected" and cannot tell you it looked wrong.
+            raise ValueError(
+                f"api_key does not look like a Rotascale key: expected it to "
+                f"start with 'rota_', got {self._api_key[:6]!r}…"
+            )
         self._timeout = timeout
         # subhadipmitra@: Enforcement gets a LONGER timeout than capture. Capture
         # is on the agent's critical path and can be dropped; an authorisation
@@ -244,8 +277,14 @@ class Rotascale:
             with self._lock:
                 if self._http is None:
                     headers = {"user-agent": "rotascale-python/0.1.0"}
-                    if self._token:
-                        headers["authorization"] = f"Bearer {self._token}"
+                    # subhadipmitra@: Both go in `Authorization: Bearer`. The
+                    # server accepts either there and tells them apart by the
+                    # `rota_` prefix, so callers never have to work out which
+                    # header a credential belongs in. The key wins if both are
+                    # somehow set: it is the one an agent is meant to use.
+                    credential = self._api_key or self._token
+                    if credential:
+                        headers["authorization"] = f"Bearer {credential}"
                     if self._workspace:
                         headers["x-rotascale-workspace"] = self._workspace
                     self._http = httpx.Client(
