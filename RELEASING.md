@@ -75,3 +75,32 @@ of the release path at all.
 
 Actions → Release → *Run workflow* → pick a package. It builds and verifies and
 publishes nothing; the publish job only runs for a tag.
+
+## Checking the providers have not moved
+
+```bash
+cd python
+uv run --with openai --with anthropic --with google-genai \
+    python scripts/validate_providers.py
+```
+
+Calls each real API once and asserts every field the middlewares read is
+actually there. Every other test uses a fake written from the documentation,
+which proves a middleware handles the shape we *believe* a provider returns —
+and that belief is the thing worth checking, because a wrong one records `None`
+silently.
+
+Its first run found two bugs nothing else could: Anthropic writing
+non-normalised token field names, and the Gemini wrapper letting the provider's
+client be garbage-collected mid-call. It also found `gemini-2.0-flash` had been
+retired.
+
+It runs weekly in CI (`.github/workflows/providers.yml`) with repository
+secrets, and never gates a pull request — it spends money and needs
+credentials, and a contributor without secrets should not see a red build they
+cannot fix. A provider whose key is absent is reported SKIPPED, never as
+passing.
+
+**Provider keys belong in repository secrets, not on the demo host.** The demo
+uses a local Ollama, so a reseed costs nothing and cannot silently thin out when
+a card expires.

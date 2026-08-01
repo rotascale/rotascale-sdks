@@ -1,0 +1,45 @@
+# Do the real provider APIs still match what the middlewares assume?
+#
+# subhadipmitra@: Separate from CI on purpose. It spends money and needs
+# credentials, so it must never gate a pull request — a contributor without
+# secrets would see a red build they cannot fix.
+#
+# It runs weekly because providers change under us. The first run of this
+# script found that `gemini-2.0-flash` had been retired and returned 404, and
+# found two bugs in our own middlewares that fakes could not: Anthropic writing
+# non-normalised token field names, and the Gemini wrapper letting the
+# provider's client be garbage-collected mid-call. We would rather learn that
+# from a red build on a Monday than from a customer.
+#
+# SECRETS (repository settings -> Secrets -> Actions):
+#   OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY
+# A provider whose secret is absent is reported as SKIPPED, never as passing.
+
+name: Providers
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"      # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate against the real APIs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Call each provider once
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          uv run --with openai --with anthropic --with google-genai \
+            python scripts/validate_providers.py
