@@ -1,0 +1,399 @@
+"""Rotascale client.
+
+The whole happy path:
+
+    from rotascale import Rotascale
+
+    rs = Rotascale("https://rotascale.acme.internal", token=TOKEN)
+
+    with rs.witness("refund-agent", ref="TICKET-88123") as t:
+        t.retrieval("https://customer-attachment.example/note.pdf")   # taints
+        d = t.authorize(grant, {"tools": ["issue_refund"]}, amount_minor=9_000)
+        if d.allowed:
+            issue_refund(...)
+        t.outcome(decision="approved" if d.allowed else "blocked")
+
+Three lines to record, one to enforce. Anything demanding an agent rewrite or a
+framework migration is rejected at design time.
+"""
+
+import contextvars
+import logging
+import os
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+from rotascale.errors import (
+    Blocked,
+    EnforcementUnavailable,
+    Exhausted,
+    Gated,
+    ReviewRequired,
+)
+
+logger = logging.getLogger("rotascale")
+
+# The trajectory currently in scope. Middlewares attach steps to it without the
+# caller threading a handle through every function.
+_current: contextvars.ContextVar["Trajectory | None"] = contextvars.ContextVar(
+    "rotascale_current_trajectory", default=None
+)
+
+
+def current_trajectory() -> "Trajectory | None":
+    return _current.get()
+
+
+@dataclass(frozen=True)
+class Decision:
+    outcome: str
+    allowed: bool
+    reason: str
+    grant_id: str | None = None
+    ledger_id: str | None = None
+    remaining_amount_minor: int | None = None
+    remaining_count: int | None = None
+    findings: list[str] = field(default_factory=list)
+
+    @property
+    def needs_review(self) -> bool:
+        return self.outcome in ("review_sync", "review_async")
+
+
+class Trajectory:
+    """A governed unit of agent work.
+
+    Every recording method is best-effort. If Rotascale is unreachable, the
+    agent keeps working and the SDK logs a warning — losing evidence is bad,
+    taking down production is worse.
+    """
+
+    def __init__(self, client: "Rotascale", trajectory_id: str, agent_id: str) -> None:
+        self.id = trajectory_id
+        self.agent_id = agent_id
+        self._client = client
+        self._closed = False
+        self._token: contextvars.Token | None = None
+
+    # --- recording: never raises ------------------------------------------
+
+    def step(self, kind: str, /, **payload: Any) -> None:
+        self._record(kind, payload=payload)
+
+    def plan(self, **payload: Any) -> None:
+        self._record("plan", payload=payload)
+
+    def llm_call(self, **payload: Any) -> None:
+        """A model call. Introduces no taint: the model is not an untrusted
+        source, its inputs are."""
+        self._record("llm_call", payload=payload)
+
+    def tool_call(self, tool: str, /, *, trusted: bool = False, **payload: Any) -> None:
+        self._record("tool_call", payload={"tool": tool, **payload},
+                     source_ref=tool, trusted_source=trusted)
+
+    def retrieval(self, source: str, /, *, trusted: bool = False, **payload: Any) -> None:
+        """Reading a document, page, or knowledge source.
+
+        Taints the trajectory unless the source is attested trusted — which is
+        itself a governance claim, recorded as such.
+        """
+        self._record("retrieval", payload=payload, source_ref=source, trusted_source=trusted)
+
+    def delegation(self, agent: str, /, **payload: Any) -> None:
+        self._record("delegation", payload=payload, source_ref=agent)
+
+    def sanitise(self, *discharges: str, **payload: Any) -> None:
+        """Declare that a sanitiser cleared specific taint kinds."""
+        self._record("sanitise", payload=payload, discharges=list(discharges))
+
+    def human_review(self, **payload: Any) -> None:
+        self._record("human_review", payload=payload)
+
+    def disclosure(self, **payload: Any) -> None:
+        """Record that AI involvement was disclosed to the affected person."""
+        self._record("disclosure", payload=payload)
+
+    def _record(self, kind: str, **body: Any) -> None:
+        if self._closed:
+            logger.warning("rotascale: ignoring %s step on a closed trajectory", kind)
+            return
+        try:
+            self._client._post(f"/v1/trajectories/{self.id}/steps", {"kind": kind, **body})
+        except Exception:
+            logger.warning("rotascale: failed to record %s step", kind, exc_info=True)
+
+    # --- enforcement: raises by design ------------------------------------
+
+    def authorize(
+        self,
+        grant_id: str,
+        scope: dict[str, list[str]] | None = None,
+        /,
+        *,
+        amount_minor: int = 0,
+        currency: str | None = None,
+        stakes_minor: int | None = None,
+        raise_on_refusal: bool = True,
+        **action: Any,
+    ) -> Decision:
+        """Ask whether the agent may act, and consume budget if so.
+
+        Raises by default, because the common mistake is checking `.allowed` and
+        forgetting the branch. Pass `raise_on_refusal=False` to handle outcomes
+        yourself.
+        """
+        return self._client.authorize(
+            grant_id,
+            scope,
+            amount_minor=amount_minor,
+            currency=currency,
+            stakes_minor=stakes_minor,
+            trajectory_id=self.id,
+            raise_on_refusal=raise_on_refusal,
+            **action,
+        )
+
+    # --- closing ----------------------------------------------------------
+
+    def outcome(self, **outcome: Any) -> None:
+        """Set the outcome. The trajectory closes on context exit."""
+        self._outcome = outcome
+
+    def close(self, status: str = "completed", **outcome: Any) -> None:
+        if self._closed:
+            return
+        merged = {**getattr(self, "_outcome", {}), **outcome}
+        try:
+            self._client._post(
+                f"/v1/trajectories/{self.id}/close", {"outcome": merged, "status": status}
+            )
+        except Exception:
+            logger.warning("rotascale: failed to close trajectory %s", self.id, exc_info=True)
+        finally:
+            self._closed = True
+
+
+class Rotascale:
+    """Synchronous client. Thread-safe; one instance per process is plenty."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        token: str | None = None,
+        timeout: float = 5.0,
+        enforcement_timeout: float = 10.0,
+        fail_open_enforcement: bool = False,
+        workspace: str | None = None,
+    ) -> None:
+        base_url = base_url or os.environ.get("ROTASCALE_URL")
+        if not base_url:
+            raise ValueError("base_url is required (or set ROTASCALE_URL)")
+        self.base_url = base_url.rstrip("/")
+        self._token = token or os.environ.get("ROTASCALE_TOKEN")
+        self._timeout = timeout
+        # subhadipmitra@: Enforcement gets a LONGER timeout than capture. Capture
+        # is on the agent's critical path and can be dropped; an authorisation
+        # decision cannot, so it is worth waiting a little longer for an answer
+        # than for a receipt.
+        self._enforcement_timeout = enforcement_timeout
+        self._fail_open_enforcement = fail_open_enforcement
+        self._workspace = workspace or os.environ.get("ROTASCALE_WORKSPACE")
+        self._lock = threading.Lock()
+        self._http: httpx.Client | None = None
+
+    # --- transport --------------------------------------------------------
+
+    @property
+    def http(self) -> httpx.Client:
+        if self._http is None:
+            with self._lock:
+                if self._http is None:
+                    headers = {"user-agent": "rotascale-python/0.1.0"}
+                    if self._token:
+                        headers["authorization"] = f"Bearer {self._token}"
+                    if self._workspace:
+                        headers["x-rotascale-workspace"] = self._workspace
+                    self._http = httpx.Client(
+                        base_url=self.base_url, headers=headers, timeout=self._timeout
+                    )
+        return self._http
+
+    def _post(self, path: str, body: dict, *, timeout: float | None = None) -> dict:
+        response = self.http.post(path, json=body, timeout=timeout or self._timeout)
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    def close(self) -> None:
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def __enter__(self) -> "Rotascale":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+    # --- registry ---------------------------------------------------------
+
+    def register(
+        self, name: str, *, owner: str, org_unit: str | None = None, tier: str = "L0", **kw: Any
+    ) -> dict:
+        """Register an agent. Idempotent by name within a workspace."""
+        try:
+            return self._post(
+                "/v1/agents",
+                {"name": name, "owner_subject": owner, "org_unit": org_unit,
+                 "autonomy_tier": tier, **kw},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 422:
+                body = exc.response.json()
+                if body.get("existing_id"):
+                    return {"id": body["existing_id"], "name": name, "existing": True}
+            raise
+
+    # --- capture ----------------------------------------------------------
+
+    @contextmanager
+    def witness(
+        self,
+        agent_id: str,
+        *,
+        ref: str | None = None,
+        goal: dict[str, Any] | None = None,
+        **kw: Any,
+    ):
+        """Open a trajectory for the duration of the block.
+
+        Idempotent on `ref`: a retried request continues the same trajectory
+        rather than forking history. On an exception the trajectory closes with
+        status `failed` and the error recorded — a crash is evidence too.
+        """
+        trajectory: Trajectory | None = None
+        try:
+            created = self._post(
+                "/v1/trajectories",
+                {"agent_id": agent_id, "external_ref": ref, "goal": goal or {}, **kw},
+            )
+            trajectory = Trajectory(self, created["id"], agent_id)
+            # subhadipmitra@: `external_ref` is idempotent, so a retry — or a
+            # reused ref — returns an EXISTING trajectory, which may already be
+            # closed. Honour that: appending steps to a sealed record would
+            # rightly be refused, and re-closing it 422s. Marking it closed here
+            # turns a confusing cascade of errors into a quiet no-op, which is
+            # what fail-open capture is supposed to feel like.
+            if created.get("status") not in (None, "open"):
+                logger.warning(
+                    "rotascale: external_ref %r already refers to a %s trajectory (%s); "
+                    "recording is a no-op for this block",
+                    ref, created.get("status"), created["id"],
+                )
+                trajectory._closed = True
+            trajectory._token = _current.set(trajectory)
+        except Exception:
+            logger.warning("rotascale: could not open a trajectory; running ungoverned-capture",
+                           exc_info=True)
+            trajectory = _NullTrajectory(self, agent_id)  # type: ignore[assignment]
+            trajectory._token = _current.set(trajectory)
+
+        try:
+            yield trajectory
+        except Exception as exc:
+            trajectory.close(status="failed", error=type(exc).__name__, message=str(exc)[:500])
+            raise
+        else:
+            trajectory.close()
+        finally:
+            if trajectory._token is not None:
+                _current.reset(trajectory._token)
+
+    # --- enforcement ------------------------------------------------------
+
+    def authorize(
+        self,
+        grant_id: str,
+        scope: dict[str, list[str]] | None = None,
+        /,
+        *,
+        amount_minor: int = 0,
+        currency: str | None = None,
+        stakes_minor: int | None = None,
+        trajectory_id: str | None = None,
+        raise_on_refusal: bool = True,
+        **action: Any,
+    ) -> Decision:
+        body = {
+            "grant_id": grant_id,
+            "action": {"scope": scope or {}, **action},
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "trajectory_id": trajectory_id,
+        }
+        if stakes_minor is not None:
+            body["action"]["stakes_minor"] = stakes_minor
+
+        try:
+            raw = self._post("/v1/authorize", body, timeout=self._enforcement_timeout)
+        except Exception as exc:
+            if self._fail_open_enforcement:
+                logger.error(
+                    "rotascale: enforcement unreachable and fail_open_enforcement is ON — "
+                    "this action is UNGOVERNED", exc_info=True,
+                )
+                return Decision("unavailable", True, "enforcement unreachable (failing open)")
+            raise EnforcementUnavailable(
+                f"could not reach Rotascale for an authorisation decision: {exc}"
+            ) from exc
+
+        decision = Decision(
+            outcome=raw["outcome"],
+            allowed=raw["allowed"],
+            reason=raw["reason"],
+            grant_id=raw.get("grant_id"),
+            ledger_id=raw.get("ledger_id"),
+            remaining_amount_minor=raw.get("remaining_amount_minor"),
+            remaining_count=raw.get("remaining_count"),
+            findings=raw.get("findings") or [],
+        )
+        if raise_on_refusal and not decision.allowed:
+            raise _for(decision)
+        return decision
+
+
+def _for(decision: Decision) -> Exception:
+    """Map an outcome to an exception whose type tells the caller the remedy."""
+    match decision.outcome:
+        case "exhausted":
+            return Exhausted(decision.reason, decision)
+        case "gated":
+            return Gated(decision.reason, decision)
+        case "review_sync":
+            return ReviewRequired(decision.reason, decision)
+        case _:
+            return Blocked(decision.reason, decision)
+
+
+class _NullTrajectory(Trajectory):
+    """Stand-in when the trajectory could not be opened.
+
+    subhadipmitra@: Exists so `with rs.witness(...)` never explodes when the
+    control plane is down. Every recording call becomes a no-op and the agent
+    carries on. Enforcement still goes through the real client and still fails
+    closed — losing evidence is survivable, losing the authority check is not.
+    """
+
+    def __init__(self, client: Rotascale, agent_id: str) -> None:
+        super().__init__(client, trajectory_id="", agent_id=agent_id)
+
+    def _record(self, kind: str, **body: Any) -> None:
+        return
+
+    def close(self, status: str = "completed", **outcome: Any) -> None:
+        self._closed = True
