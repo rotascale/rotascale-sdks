@@ -6,6 +6,7 @@ dependency it should not have.
 """
 
 import asyncio
+import contextlib
 from types import SimpleNamespace
 
 import httpx
@@ -508,3 +509,381 @@ def test_an_unreachable_inventory_does_not_break_the_model_call():
         response = watched.chat.completions.create(model="m", messages=[])
 
     assert response.model == "m"      # the caller still got their answer
+
+
+# --- Gemini -----------------------------------------------------------------
+#
+# subhadipmitra@: Gemini renames almost everything, and every rename is a place
+# a naive port records None silently — the call succeeds, the trajectory
+# appears, and the evidence is quietly empty. These assert the mapping.
+
+
+class _Part:
+    def __init__(self, text=None, function_call=None):
+        self.text = text
+        self.function_call = function_call
+
+
+class _Enum:
+    def __init__(self, name): self.name = name
+
+
+def _gemini_response(**kw):
+    from types import SimpleNamespace as NS
+    parts = kw.get("parts", [_Part(text="hello")])
+    return NS(
+        model_version=kw.get("served", "gemini-2.0-flash-001"),
+        response_id="resp_1",
+        usage_metadata=NS(prompt_token_count=10, candidates_token_count=4,
+                          thoughts_token_count=7, total_token_count=21),
+        candidates=[NS(content=NS(parts=parts),
+                       finish_reason=_Enum(kw.get("finish", "STOP")))],
+        prompt_feedback=kw.get("feedback"),
+    )
+
+
+def _gemini_client(response):
+    from types import SimpleNamespace as NS
+    return NS(models=NS(generate_content=lambda **kw: response))
+
+
+def test_gemini_records_the_served_build_not_the_alias():
+    """Ask for `gemini-2.0-flash`, get `gemini-2.0-flash-001`. Only the served
+    identity is evidence of what ran."""
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_gemini(_gemini_client(_gemini_response())).models.generate_content(
+            model="gemini-2.0-flash", contents=["hi"])
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["model_requested"] == "gemini-2.0-flash"
+    assert call["model_served"] == "gemini-2.0-flash-001"
+
+
+def test_gemini_usage_is_mapped_including_thinking_tokens():
+    """Gemini bills thinking tokens separately and they appear in neither of the
+    other two counts. A cost question asked later is unanswerable without it."""
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_gemini(_gemini_client(_gemini_response())).models.generate_content(
+            model="m", contents=["hi"])
+
+    usage = next(s for s in steps if s["kind"] == "llm_call")["payload"]["usage"]
+    assert usage == {"prompt_tokens": 10, "completion_tokens": 4,
+                     "thinking_tokens": 7, "total_tokens": 21}
+
+
+def test_gemini_finish_reason_is_a_name_not_a_python_repr():
+    """`FinishReason.STOP` leaking into a compliance record is worse than
+    nothing — it is a Python repr in evidence."""
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_gemini(_gemini_client(_gemini_response(finish="MAX_TOKENS"))) \
+            .models.generate_content(model="m", contents=["hi"])
+
+    assert next(s for s in steps if s["kind"] == "llm_call")["payload"][
+        "finish_reason"] == "MAX_TOKENS"
+
+
+def test_gemini_function_calls_are_found_inside_parts():
+    """They are not a top-level field. A port that looks for `tool_calls`
+    records nothing and nobody notices."""
+    from types import SimpleNamespace as NS
+
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+    parts = [_Part(text="let me check"),
+             _Part(function_call=NS(name="lookup_order")),
+             _Part(function_call=NS(name="issue_refund"))]
+
+    with client.witness("agt_1"):
+        watch_gemini(_gemini_client(_gemini_response(parts=parts))) \
+            .models.generate_content(model="m", contents=["hi"])
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["tool_calls"] == ["lookup_order", "issue_refund"]
+    assert call["response"] == "let me check"      # text parts still captured
+
+
+def test_gemini_a_safety_block_is_not_recorded_as_an_empty_answer():
+    """A blocked response has NO candidates, and the reason lives elsewhere.
+    Without this the trajectory shows a successful call with nothing in it,
+    which reads as the model having nothing to say."""
+    from types import SimpleNamespace as NS
+
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+    blocked = NS(model_version="gemini-2.0-flash-001", response_id="r",
+                 usage_metadata=None, candidates=[],
+                 prompt_feedback=NS(block_reason=_Enum("SAFETY")))
+
+    with client.witness("agt_1"):
+        watch_gemini(_gemini_client(blocked)).models.generate_content(
+            model="m", contents=["hi"])
+
+    assert next(s for s in steps if s["kind"] == "llm_call")["payload"][
+        "blocked_by_provider"] == "SAFETY"
+
+
+def test_gemini_a_failed_call_is_still_recorded():
+    from types import SimpleNamespace as NS
+
+    from rotascale.middleware import watch_gemini
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    def explode(**kw):
+        raise RuntimeError("quota exceeded")
+
+    with client.witness("agt_1"):
+        watched = watch_gemini(NS(models=NS(generate_content=explode)))
+        with contextlib.suppress(RuntimeError):
+            watched.models.generate_content(model="m", contents=["hi"])
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["error"] == "RuntimeError"
+    assert "quota" in call["error_message"]
+
+
+# --- Bedrock ----------------------------------------------------------------
+
+
+def _bedrock(**ops):
+    from types import SimpleNamespace as NS
+    return NS(**ops)
+
+
+def test_bedrock_records_the_inference_region_from_the_model_id():
+    """subhadipmitra@: `us.anthropic.…` means the call may be served from any US
+    region in that profile. For a customer whose market profile forbids
+    processing outside the EU, that is the fact an auditor asks about — it must
+    not be buried in a string somebody has to know how to parse."""
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_bedrock(_bedrock(converse=lambda **kw: {
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 11, "outputTokens": 5, "totalTokens": 16},
+            "output": {"message": {"content": [{"text": "ok"}]}},
+        })).converse(modelId="us.anthropic.claude-sonnet-4-20250514-v1:0")
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["inference_region"] == "us"
+    # Verbatim: family, version AND profile. Re-deriving any of it is guesswork.
+    assert call["model_served"] == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    assert call["usage"]["prompt_tokens"] == 11
+
+
+def test_bedrock_a_plain_model_id_has_no_region():
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_bedrock(_bedrock(converse=lambda **kw: {"output": {}})) \
+            .converse(modelId="anthropic.claude-3-haiku-20240307-v1:0")
+
+    assert "inference_region" not in next(
+        s for s in steps if s["kind"] == "llm_call")["payload"]
+
+
+def test_bedrock_tool_use_blocks_are_surfaced():
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_bedrock(_bedrock(converse=lambda **kw: {
+            "output": {"message": {"content": [
+                {"text": "checking"},
+                {"toolUse": {"name": "lookup_policy", "input": {}}},
+            ]}},
+        })).converse(modelId="anthropic.claude-3-haiku")
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["tool_calls"] == ["lookup_policy"]
+
+
+def test_bedrock_invoke_model_body_is_readable_by_the_caller_afterwards():
+    """The load-bearing one.
+
+    subhadipmitra@: botocore hands back a StreamingBody that can be read ONCE.
+    Reading it to extract usage and not putting it back leaves the caller with
+    an empty completion — their agent silently receives nothing, and the bug
+    looks like a provider fault rather than like us.
+    """
+    import io
+    import json as _json
+
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+    payload = _json.dumps({
+        "usage": {"input_tokens": 9, "output_tokens": 3},
+        "stop_reason": "end_turn",
+    }).encode()
+
+    with client.witness("agt_1"):
+        response = watch_bedrock(_bedrock(
+            invoke_model=lambda **kw: {"body": io.BytesIO(payload)},
+        )).invoke_model(modelId="anthropic.claude-3-haiku")
+
+    # We read it...
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["usage"] == {"prompt_tokens": 9, "completion_tokens": 3}
+    assert call["stop_reason"] == "end_turn"
+    # ...and the caller can still read it.
+    assert _json.loads(response["body"].read()) == _json.loads(payload)
+
+
+def test_bedrock_an_unrecognised_body_says_so_rather_than_guessing():
+    """A plausible but wrong token count in a cost report is worse than a
+    missing one, and an unrecognised family is a gap in this middleware that
+    should be visible as one."""
+    import io
+    import json as _json
+
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        watch_bedrock(_bedrock(
+            invoke_model=lambda **kw: {
+                "body": io.BytesIO(_json.dumps({"something": "else"}).encode())},
+        )).invoke_model(modelId="cohere.command-r")
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert "usage" not in call
+    assert "unrecognised" in call["usage_unavailable"]
+
+
+def test_bedrock_a_stream_is_handed_back_untouched():
+    """An EventStream is consumed once, by the caller. Enriching the record by
+    reading it would empty their response."""
+    from rotascale.middleware import watch_bedrock
+    steps: list[dict] = []
+    client = make_client(steps)
+    sentinel = object()
+
+    with client.witness("agt_1"):
+        returned = watch_bedrock(_bedrock(
+            converse_stream=lambda **kw: {"stream": sentinel},
+        )).converse_stream(modelId="us.anthropic.claude-sonnet-4")
+
+    assert returned["stream"] is sentinel
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["streamed"] is True
+
+
+# --- LangChain --------------------------------------------------------------
+
+
+def test_langchain_binds_the_trajectory_at_construction_not_at_callback_time():
+    """The trap this middleware exists to avoid.
+
+    subhadipmitra@: LangChain fires callbacks from a THREAD POOL for sync
+    chains. `current_trajectory()` is a ContextVar, which does not cross a
+    thread boundary — so a handler reading it inside `on_llm_end` records
+    perfectly in an async chain, records NOTHING in a sync one, and raises no
+    error either way. This asserts the binding survives the hop.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace as NS
+
+    from rotascale.middleware import RotascaleCallback
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = RotascaleCallback()            # bound HERE, on this thread
+        response = NS(llm_output={"model_name": "gpt-4o-2024-08-06",
+                                  "token_usage": {"prompt_tokens": 7,
+                                                  "completion_tokens": 2}},
+                      generations=[[NS(text="done")]])
+        # Fired from a worker, exactly as LangChain does for a sync chain.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(handler.on_llm_end, response, run_id="r1").result()
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["model_served"] == "gpt-4o-2024-08-06"
+    assert call["usage"]["prompt_tokens"] == 7
+
+
+def test_langchain_a_handler_built_outside_a_witness_block_says_so(caplog):
+    """The alternative is a handler that silently records nothing while the
+    customer believes their chain is governed."""
+    from rotascale.middleware import RotascaleCallback
+
+    with caplog.at_level("WARNING"):
+        RotascaleCallback()
+    assert "outside a witness block" in caplog.text
+
+
+def test_langchain_retrievals_are_untrusted_by_default():
+    """A retriever pulling a document is exactly the taint source `gated`
+    exists for. Defaulting to trusted would quietly disable that control for
+    every LangChain user."""
+    from rotascale.middleware import RotascaleCallback
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        RotascaleCallback().on_retriever_start(
+            {"name": "vectorstore"}, "who is the customer?", run_id="r")
+
+    retrieval = next(s for s in steps if s["kind"] == "retrieval")
+    assert retrieval["trusted_source"] is False
+    assert retrieval["source_ref"] == "langchain:vectorstore"
+
+
+def test_langchain_tool_calls_are_untrusted_by_default():
+    from rotascale.middleware import RotascaleCallback
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        RotascaleCallback().on_tool_start({"name": "search_web"}, "q", run_id="r")
+
+    tool = next(s for s in steps if s["kind"] == "tool_call")
+    assert tool["trusted_source"] is False
+
+
+def test_langchain_an_unimplemented_hook_does_not_raise():
+    """LangChain calls many hooks. One that throws takes the customer's chain
+    down with it."""
+    from rotascale.middleware import RotascaleCallback
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        handler = RotascaleCallback()
+        handler.on_agent_action(object(), run_id="r")     # never implemented
+        handler.on_text("anything")
+        handler.on_llm_new_token("tok")
+
+
+def test_langchain_a_failed_llm_call_is_recorded():
+    from rotascale.middleware import RotascaleCallback
+    steps: list[dict] = []
+    client = make_client(steps)
+
+    with client.witness("agt_1"):
+        RotascaleCallback().on_llm_error(RuntimeError("rate limited"), run_id="r")
+
+    call = next(s for s in steps if s["kind"] == "llm_call")["payload"]
+    assert call["error"] == "RuntimeError"
+    assert "rate limited" in call["error_message"]

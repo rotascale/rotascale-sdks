@@ -10,6 +10,12 @@ every call site.
 """
 
 from rotascale.middleware.anthropic_api import watch_anthropic
+from rotascale.middleware.bedrock_api import watch_bedrock
+from rotascale.middleware.gemini_api import watch_gemini
+from rotascale.middleware.langchain_api import (
+    RotascaleCallback,
+    watch_langchain,
+)
 from rotascale.middleware.mcp_api import (
     manifest_digest,
     split_digests,
@@ -18,9 +24,13 @@ from rotascale.middleware.mcp_api import (
 from rotascale.middleware.openai_compat import watch_openai
 
 __all__ = [
+    "RotascaleCallback",
     "manifest_digest",
     "split_digests",
     "watch_anthropic",
+    "watch_bedrock",
+    "watch_gemini",
+    "watch_langchain",
     "watch_mcp",
     "watch_openai",
 ]
