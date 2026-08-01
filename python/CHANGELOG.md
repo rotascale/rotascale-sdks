@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.2 — 2026-08-02
+
+**Ten frameworks, one line each.** Gemini, Bedrock, LangChain, LangGraph, ADK,
+CrewAI, Strands and AutoGen join OpenAI-compatible and Anthropic. Still no
+provider dependency: verified in a clean environment that none of the ten
+libraries is installed alongside.
+
+**ADK can refuse.** `watch_adk(agent, grant=GRANT)` authorises tool calls
+before they run, and a refusal cancels the call — ADK's before-callback can
+short-circuit, so this is a real enforcement point rather than a record of one.
+Without `grant=` it observes like the rest. Only ADK and
+`rotascale-mcp-proxy` are controls; the others witness.
+
+**LangChain and LangGraph are callback handlers.** Build them *inside* the
+witness block — LangChain fires callbacks from a thread pool, and the active
+trajectory is a ContextVar that does not cross a thread boundary. A handler
+built outside says so loudly rather than silently recording nothing.
+
+LangGraph additionally records the node traversal with visit counts, so a loop
+reads as a loop.
+
 ## 0.2.1 — 2026-08-02
 
 **Provenance reports itself.** The middlewares now tell Rotascale which model
