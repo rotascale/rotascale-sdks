@@ -359,3 +359,80 @@ def test_the_readme_zero_argument_form_works(monkeypatch):
 
     assert client.base_url == "https://rotascale.acme.internal"   # trailing / trimmed
     assert client.http.headers["authorization"] == "Bearer rota_live_readme"
+
+
+# --- an agent names itself --------------------------------------------------
+
+
+def _resolver(status="discovered", governed=False, notice=None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents/resolve":
+            import json
+            slug = json.loads(request.content)["slug"]
+            return httpx.Response(200, json={
+                "id": "agt_resolved", "slug": slug, "status": status,
+                "discovered": True, "governed": governed, "notice": notice,
+            })
+        if request.url.path == "/v1/trajectories":
+            return httpx.Response(201, json={"id": "trj_1"})
+        return httpx.Response(200, json={})
+    return handler
+
+
+def test_an_agent_names_itself():
+    client = make_client(_resolver())
+    agent = client.agent("refund-assistant")
+
+    assert agent.id == "agt_resolved"
+    assert agent.slug == "refund-assistant"
+    # Source code carries a name a human wrote, not a ULID they copied.
+    assert str(agent) == "refund-assistant"
+
+
+def test_a_discovered_agent_reports_that_it_is_not_yet_governed():
+    """The field that stops an integration reporting success while nothing is
+    being enforced."""
+    client = make_client(_resolver(status="discovered", governed=False))
+    assert client.agent("brand-new").governed is False
+
+    client = make_client(_resolver(status="active", governed=True))
+    assert client.agent("established").governed is True
+
+
+def test_the_notice_is_logged_at_startup_not_swallowed(caplog):
+    """Warned once where somebody is still watching the logs, rather than at
+    the first refusal halfway through a shift."""
+    client = make_client(_resolver(notice="This agent holds no authority."))
+    with caplog.at_level("WARNING"):
+        client.agent("unclaimed")
+    assert "holds no authority" in caplog.text
+
+
+def test_witness_accepts_the_handle_directly():
+    """`rs.witness(agent)` — no reaching into `.id` at the call site."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _resolver()(request)
+
+    client = make_client(handler)
+    agent = client.agent("refund-assistant")
+    with client.witness(agent, ref="TICKET-1"):
+        pass
+
+    import json
+    opened = next(c for c in calls if c.url.path == "/v1/trajectories")
+    assert json.loads(opened.content)["agent_id"] == "agt_resolved"
+
+
+def test_a_raw_agent_id_still_works():
+    """The pre-slug call style, for anyone who has one pasted in already."""
+    calls: list[httpx.Request] = []
+    client = make_client(ok_handler(calls))
+    with client.witness("agt_pasted", ref="TICKET-2"):
+        pass
+
+    import json
+    opened = next(c for c in calls if c.url.path == "/v1/trajectories")
+    assert json.loads(opened.content)["agent_id"] == "agt_pasted"

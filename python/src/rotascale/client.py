@@ -93,6 +93,25 @@ class Decision:
         return self.policy_outcome != self.outcome
 
 
+@dataclass(frozen=True)
+class Agent:
+    """An agent as Rotascale knows it, returned by `Rotascale.agent(slug)`.
+
+    subhadipmitra@: `governed` is the field worth checking. An agent that has
+    just been discovered records evidence perfectly well but holds no
+    authority, and an integration that cannot tell the difference will report
+    success while the customer believes something is being enforced.
+    """
+
+    id: str
+    slug: str
+    status: str
+    governed: bool
+
+    def __str__(self) -> str:
+        return self.slug
+
+
 class Trajectory:
     """A governed unit of agent work.
 
@@ -327,12 +346,43 @@ class Rotascale:
                     return {"id": body["existing_id"], "name": name, "existing": True}
             raise
 
+    # --- identity ---------------------------------------------------------
+
+    def agent(self, slug: str) -> Agent:
+        """Name this agent. It is created on first sight if Rotascale has not
+        seen the slug before.
+
+        subhadipmitra@: The slug is a name YOU write and control, not an
+        identifier you copy out of a console. It survives redeployment and is
+        legible in a diff, which an opaque `agt_01KYY…` is not.
+
+        Safe to call on every process start: the server maps `(workspace, slug)`
+        to one agent and returns the same one thereafter.
+
+        A newly discovered agent records evidence but **holds no authority** —
+        somebody has to claim it in the console first. `agent.governed` says
+        which state you are in, so an integration can warn at startup rather
+        than discover it at the first authorisation.
+        """
+        seen = self._post("/v1/agents/resolve", {"slug": slug})
+        agent = Agent(
+            id=seen["id"],
+            slug=seen["slug"],
+            status=seen["status"],
+            governed=seen["governed"],
+        )
+        if seen.get("notice"):
+            # Warned once, at startup, where somebody is still watching the
+            # logs — not on the first refusal, halfway through a shift.
+            logger.warning("rotascale: %s (%s)", seen["notice"], agent.slug)
+        return agent
+
     # --- capture ----------------------------------------------------------
 
     @contextmanager
     def witness(
         self,
-        agent_id: str,
+        agent: str | Agent,
         *,
         ref: str | None = None,
         goal: dict[str, Any] | None = None,
@@ -340,10 +390,13 @@ class Rotascale:
     ):
         """Open a trajectory for the duration of the block.
 
+        Takes either an `Agent` from `rs.agent("slug")` or a raw agent id.
+
         Idempotent on `ref`: a retried request continues the same trajectory
         rather than forking history. On an exception the trajectory closes with
         status `failed` and the error recorded — a crash is evidence too.
         """
+        agent_id = agent.id if isinstance(agent, Agent) else agent
         trajectory: Trajectory | None = None
         try:
             created = self._post(

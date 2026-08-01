@@ -34,8 +34,9 @@ a notebook, not in a deployed runtime.
 from rotascale import Rotascale, Gated
 
 rs = Rotascale()                     # reads ROTASCALE_URL and ROTASCALE_API_KEY
+agent = rs.agent("refund-agent")     # names itself; created on first sight
 
-with rs.witness("refund-agent", ref="TICKET-88123") as t:
+with rs.witness(agent, ref="TICKET-88123") as t:
     t.retrieval("https://customer-attachment.example/note.pdf")   # untrusted -> taints
     try:
         t.authorize(GRANT, {"tools": ["issue_refund"]}, amount_minor=9_000)
@@ -47,6 +48,42 @@ with rs.witness("refund-agent", ref="TICKET-88123") as t:
 
 Three lines to record, one to enforce. Anything requiring an agent rewrite or a
 framework migration is rejected at design time.
+
+## Agents name themselves
+
+`rs.agent("refund-agent")` is safe on every process start. The slug is a name
+**you** write and control — it survives redeployment and is legible in a diff,
+which an opaque `agt_01KYY…` copied out of a console is not. Rotascale maps
+`(workspace, slug)` to one agent and returns the same one thereafter.
+
+There is no registration step. An agent appears in the inventory the moment it
+speaks, because an inventory that depends on somebody remembering to register is
+incomplete by default — and an agent nobody registered is not an unregistered
+agent, it is an ungoverned one.
+
+**What appears automatically holds nothing.** A newly discovered agent records
+evidence but has no authority and cannot be granted any until a named human
+claims it in the console. That is the half that keeps the inventory *governed*
+rather than self-asserted: otherwise anyone holding a key could mint a governed
+principal just by naming one.
+
+```python
+agent = rs.agent("refund-agent")
+if not agent.governed:
+    log.warning("%s is not claimed yet — nothing is being enforced", agent.slug)
+```
+
+The SDK logs that warning for you at startup, where somebody is still watching,
+rather than leaving you to discover it at the first refusal.
+
+Slugs are **validated, not cleaned**. `refund_assistant` and `refund-assistant`
+are two different agents, and a slug that cannot work is refused with a
+suggestion rather than quietly rewritten. Silently normalising would merge two
+programs onto one record, and the evidence would then say one agent did what two
+of them did. A typo making a second agent is visible and fixable; a merge is
+neither.
+
+A slug can never be reassigned — the database refuses it, not just the API.
 
 ## The contract: capture fails open, enforcement fails closed
 
