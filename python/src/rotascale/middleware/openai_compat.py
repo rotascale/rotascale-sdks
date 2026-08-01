@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from rotascale.client import current_trajectory
-from rotascale.middleware._common import logger, truncate
+from rotascale.middleware._common import logger, report_served_model, truncate
 
 
 class _WatchedCompletions:
@@ -53,6 +53,9 @@ class _WatchedCompletions:
         step = self._step(kwargs)
         step["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
         step["model_served"] = getattr(response, "model", None)
+        # The inventory learns what actually ran, from the runtime that
+        # ran it. Once per (agent, model), not once per call.
+        report_served_model(step["model_served"], "openai-compatible")
         step["response_id"] = getattr(response, "id", None)
 
         usage = getattr(response, "usage", None)

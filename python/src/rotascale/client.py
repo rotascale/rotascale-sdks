@@ -378,6 +378,45 @@ class Rotascale:
             logger.warning("rotascale: %s (%s)", seen["notice"], agent.slug)
         return agent
 
+    def report_provenance(
+        self,
+        agent: "Agent | str",
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        model_version: str | None = None,
+        prompt_version: str | None = None,
+        tools: dict[str, Any] | None = None,
+        knowledge: dict[str, Any] | None = None,
+    ) -> None:
+        """Report this agent's current configuration.
+
+        subhadipmitra@: The runtime already knows its model, its prompt version
+        and its tool manifest. A human retyping a manifest digest into a form is
+        recording a guess, and the grant-drift check that compares against it is
+        then comparing against that guess.
+
+        Called automatically by the middlewares the first time they see which
+        model actually served a call — the SERVED identity, not the requested
+        one, because those differ and only the served one is evidence.
+
+        Deduplicated server-side on a content hash, so calling it on every
+        process start is correct and cheap. Never raises: this is capture.
+        """
+        agent_id = agent.id if isinstance(agent, Agent) else agent
+        body: dict[str, Any] = {
+            "prompt_version": prompt_version,
+            "tool_manifest": tools or {},
+            "knowledge_sources": knowledge or {},
+        }
+        if model:
+            body["model"] = {"name": model, "provider": provider,
+                             "version": model_version}
+        try:
+            self._post(f"/v1/agents/{agent_id}/provenance", body)
+        except Exception:
+            logger.warning("rotascale: could not report provenance", exc_info=True)
+
     # --- capture ----------------------------------------------------------
 
     @contextmanager

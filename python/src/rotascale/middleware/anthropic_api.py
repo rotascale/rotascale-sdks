@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from rotascale.client import current_trajectory
-from rotascale.middleware._common import logger, truncate
+from rotascale.middleware._common import logger, report_served_model, truncate
 
 
 class _WatchedMessages:
@@ -32,6 +32,9 @@ class _WatchedMessages:
             "response_id": getattr(response, "id", None),
             "stop_reason": getattr(response, "stop_reason", None),
         }
+        # The inventory learns what actually ran, from the runtime that ran it.
+        # Once per (agent, model), not once per call.
+        report_served_model(step["model_served"], "anthropic")
         usage = getattr(response, "usage", None)
         if usage is not None:
             step["usage"] = {

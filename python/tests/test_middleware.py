@@ -401,3 +401,110 @@ def test_a_failed_manifest_report_does_not_break_the_session():
     # The caller still got their tools.
     assert result["tools"][0]["name"] == "read"
     assert t is not None
+
+
+# --- provenance reports itself ---------------------------------------------
+
+
+def test_the_served_model_is_reported_not_the_requested_one():
+    """subhadipmitra@: They differ — ask for `gpt-4o` and a dated build answers.
+    Only the served identity is evidence of what actually ran."""
+    import rotascale.middleware._common as common
+    common._reported.clear()
+
+    posted: list[tuple[str, dict]] = []
+    client = make_client([])
+    real_post = client._post
+
+    def record(path, body, **kw):
+        posted.append((path, body))
+        return {} if "provenance" in path else real_post(path, body, **kw)
+
+    client._post = record
+
+    with client.witness("agt_1"):
+        watched = watch_openai(SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kw: SimpleNamespace(
+                model="gpt-4o-2024-08-06", id="r1", usage=None, choices=[])))))
+        watched.chat.completions.create(model="gpt-4o", messages=[])
+
+    provenance = [b for p, b in posted if "provenance" in p]
+    assert provenance, "no provenance was reported"
+    assert provenance[0]["model"]["name"] == "gpt-4o-2024-08-06"   # served
+    assert provenance[0]["model"]["provider"] == "openai-compatible"
+
+
+def test_provenance_is_reported_once_per_model_not_once_per_call():
+    """It is an HTTP call on the agent's critical path. Reporting per call would
+    put a round trip in front of every completion."""
+    import rotascale.middleware._common as common
+    common._reported.clear()
+
+    posted: list[str] = []
+    client = make_client([])
+    real_post = client._post
+
+    def record(path, body, **kw):
+        posted.append(path)
+        return {} if "provenance" in path else real_post(path, body, **kw)
+
+    client._post = record
+
+    with client.witness("agt_1"):
+        watched = watch_openai(SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kw: SimpleNamespace(
+                model="same-model", id="r", usage=None, choices=[])))))
+        for _ in range(5):
+            watched.chat.completions.create(model="same-model", messages=[])
+
+    assert sum(1 for p in posted if "provenance" in p) == 1
+
+
+def test_a_model_SWITCH_is_still_reported():
+    """Deduplication must not hide a genuine change — that is the event the
+    inventory exists to catch."""
+    import rotascale.middleware._common as common
+    common._reported.clear()
+
+    posted: list[dict] = []
+    client = make_client([])
+    real_post = client._post
+
+    def record(path, body, **kw):
+        if "provenance" in path:
+            posted.append(body)
+            return {}
+        return real_post(path, body, **kw)
+
+    client._post = record
+    served = ["model-a", "model-a", "model-b"]
+
+    with client.witness("agt_1"):
+        watched = watch_openai(SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kw: SimpleNamespace(
+                model=served.pop(0), id="r", usage=None, choices=[])))))
+        for _ in range(3):
+            watched.chat.completions.create(model="x", messages=[])
+
+    assert [b["model"]["name"] for b in posted] == ["model-a", "model-b"]
+
+
+def test_an_unreachable_inventory_does_not_break_the_model_call():
+    """Capture fails open, without exception."""
+    import rotascale.middleware._common as common
+    common._reported.clear()
+
+    client = make_client([])
+
+    def explode(path, body, **kw):
+        raise RuntimeError("control plane down")
+
+    client._post = explode
+
+    with client.witness("agt_1"):
+        watched = watch_openai(SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kw: SimpleNamespace(
+                model="m", id="r", usage=None, choices=[])))))
+        response = watched.chat.completions.create(model="m", messages=[])
+
+    assert response.model == "m"      # the caller still got their answer
