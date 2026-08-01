@@ -1,11 +1,45 @@
 [project]
 name = "rotascale"
-version = "0.1.0"
-description = "Rotascale SDK — govern what your agents are allowed to do, and prove what they did"
+# subhadipmitra@: The ONLY place the version is written. `_version.py` reads it
+# back from installed metadata, because it used to live here, in __init__.py and
+# in a hardcoded user-agent, and two of those were stale.
+#
+# 0.2.0 supersedes the 0.1.1 on PyPI, which was the SDK for the retired
+# Trust Intelligence Platform — a different product under the same name. PyPI
+# never allows a version to be replaced, so superseding is the only "overwrite"
+# there is.
+version = "0.2.0"
+description = "Govern what your agents are allowed to do, and prove what they did"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Rota, Inc.", email = "dev@rotascale.com" }]
+keywords = [
+    "agent", "governance", "ai-governance", "authorization", "audit",
+    "evidence", "compliance", "llm", "mcp", "observability",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
     "httpx>=0.28",
 ]
+
+[project.urls]
+Homepage = "https://rotascale.com"
+Source = "https://github.com/rotascale/rotascale-sdks"
+Issues = "https://github.com/rotascale/rotascale-console/issues"
 
 [project.optional-dependencies]
 mcp = []          # duck-typed; no mcp dependency needed

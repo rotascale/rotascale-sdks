@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 
+from rotascale._version import USER_AGENT
 from rotascale.errors import (
     Blocked,
     EnforcementUnavailable,
@@ -295,7 +296,7 @@ class Rotascale:
         if self._http is None:
             with self._lock:
                 if self._http is None:
-                    headers = {"user-agent": "rotascale-python/0.1.0"}
+                    headers = {"user-agent": USER_AGENT}
                     # subhadipmitra@: Both go in `Authorization: Bearer`. The
                     # server accepts either there and tells them apart by the
                     # `rota_` prefix, so callers never have to work out which

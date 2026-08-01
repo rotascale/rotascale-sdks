@@ -1,5 +1,6 @@
 """Rotascale — govern what your agents are allowed to do, and prove what they did."""
 
+from rotascale._version import __version__
 from rotascale.client import Agent, Decision, Rotascale, Trajectory, current_trajectory
 from rotascale.errors import (
     Blocked,
@@ -10,7 +11,6 @@ from rotascale.errors import (
     RotascaleError,
 )
 
-__version__ = "0.1.0"
 __all__ = [
     "Agent",
     "Blocked",
@@ -22,5 +22,6 @@ __all__ = [
     "Rotascale",
     "RotascaleError",
     "Trajectory",
+    "__version__",
     "current_trajectory",
 ]
