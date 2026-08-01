@@ -213,3 +213,73 @@ class TestEnforcementFailsClosed:
         # Capture degrades to a null trajectory; enforcement still fails closed.
         with rs.witness("agt_1") as t, pytest.raises(Blocked):
             t.authorize("grt_1", {"tools": ["forbidden"]})
+
+
+# --- enforcement visibility ------------------------------------------------
+#
+# subhadipmitra@: A caller must be able to tell that the control they rely on is
+# measuring rather than enforcing. Without this the SDK reports `allow` for a
+# grant in observe and looks exactly like a grant that is refusing things —
+# which is the same failure fixed twice server-side, on the surface customers
+# actually integrate against.
+
+
+def test_a_non_enforcing_grant_is_visible_to_the_caller():
+    from rotascale.client import Decision
+
+    observing = Decision(
+        outcome="allow", allowed=True, reason="not enforced (observe)",
+        grant_id="grt_1", policy_outcome="deny", enforcement_mode="observe",
+        findings=["would_refuse:deny:out of scope"],
+    )
+    assert observing.allowed is True
+    assert observing.enforcing is False
+    assert observing.suppressed is True
+
+
+def test_an_enforcing_grant_reports_itself_as_such():
+    from rotascale.client import Decision
+
+    enforcing = Decision(
+        outcome="deny", allowed=False, reason="out of scope",
+        grant_id="grt_2", policy_outcome="deny", enforcement_mode="enforce",
+    )
+    assert enforcing.enforcing is True
+    assert enforcing.suppressed is False
+
+
+def test_an_older_server_is_assumed_to_be_enforcing():
+    """Assuming a control is off when it is on is the safer error to make."""
+    from rotascale.client import Decision
+
+    legacy = Decision(outcome="allow", allowed=True, reason="authorised",
+                      grant_id="grt_3")
+    assert legacy.enforcing is True
+    assert legacy.suppressed is False
+
+
+def test_suppression_is_detectable_without_policy_outcome():
+    """Falls back to the findings, so a partly-upgraded server still tells the
+    truth rather than silently reporting enforcement."""
+    from rotascale.client import Decision
+
+    legacy = Decision(
+        outcome="allow", allowed=True, reason="not enforced (observe)",
+        grant_id="grt_4", findings=["would_refuse:deny:out of scope"],
+    )
+    assert legacy.suppressed is True
+
+
+def test_the_non_enforcing_warning_fires_once_per_grant(caplog):
+    import logging
+
+    from rotascale.client import Decision, _ANNOUNCED, _warn_if_not_enforcing
+
+    _ANNOUNCED.clear()
+    decision = Decision(outcome="allow", allowed=True, reason="not enforced (observe)",
+                        grant_id="grt_noisy", enforcement_mode="observe")
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            _warn_if_not_enforcing(decision)
+    warnings = [r for r in caplog.records if "NOT refusing anything" in r.message]
+    assert len(warnings) == 1, "a per-call warning gets filtered out and protects nobody"

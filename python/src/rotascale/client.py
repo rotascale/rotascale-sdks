@@ -58,10 +58,39 @@ class Decision:
     remaining_amount_minor: int | None = None
     remaining_count: int | None = None
     findings: list[str] = field(default_factory=list)
+    # What the policy decided, before the grant's enforcement mode was applied,
+    # and the mode itself. Both may be None against an older server.
+    policy_outcome: str | None = None
+    enforcement_mode: str | None = None
 
     @property
     def needs_review(self) -> bool:
         return self.outcome in ("review_sync", "review_async")
+
+    @property
+    def enforcing(self) -> bool:
+        """Is this grant actually refusing anything?
+
+        subhadipmitra@: A grant in observe returns `allow` for everything. Ask
+        this rather than comparing `enforcement_mode` to a string — the set of
+        modes will grow, and a caller who wrote `mode == "enforce"` would
+        silently start treating a new non-enforcing mode as enforcement.
+
+        Unknown (an older server) is reported as enforcing, because assuming a
+        control is off when it is on is the safer error for a caller to make.
+        """
+        return self.enforcement_mode in (None, "enforce")
+
+    @property
+    def suppressed(self) -> bool:
+        """The policy refused this and the enforcement mode let it through.
+
+        True only while a grant is being measured. If this is ever true in
+        production, the control you believe is running is not.
+        """
+        if self.policy_outcome is None:
+            return any(f.startswith("would_refuse:") for f in self.findings)
+        return self.policy_outcome != self.outcome
 
 
 class Trajectory:
@@ -327,6 +356,7 @@ class Rotascale:
         stakes_minor: int | None = None,
         trajectory_id: str | None = None,
         raise_on_refusal: bool = True,
+        incumbent_decision: str | None = None,
         **action: Any,
     ) -> Decision:
         body = {
@@ -338,6 +368,11 @@ class Rotascale:
         }
         if stakes_minor is not None:
             body["action"]["stakes_minor"] = stakes_minor
+        # For grants in shadow mode: what your existing system or reviewer
+        # decided. Divergence between that and the policy is the whole point of
+        # a shadow run — where they disagree is where the policy is wrong.
+        if incumbent_decision is not None:
+            body["incumbent_decision"] = incumbent_decision
 
         try:
             raw = self._post("/v1/authorize", body, timeout=self._enforcement_timeout)
@@ -361,10 +396,35 @@ class Rotascale:
             remaining_amount_minor=raw.get("remaining_amount_minor"),
             remaining_count=raw.get("remaining_count"),
             findings=raw.get("findings") or [],
+            policy_outcome=raw.get("policy_outcome"),
+            enforcement_mode=raw.get("enforcement_mode"),
         )
+        _warn_if_not_enforcing(decision)
         if raise_on_refusal and not decision.allowed:
             raise _for(decision)
         return decision
+
+
+# subhadipmitra@: Warned once per grant, not per call. A per-call warning in a
+# hot path gets filtered out within the hour and then protects nobody; a single
+# clear line at startup is read. Observe is a legitimate and recommended state —
+# what must never happen is that it looks like enforcement.
+_ANNOUNCED: set[str] = set()
+
+
+def _warn_if_not_enforcing(decision: Decision) -> None:
+    if decision.enforcing or not decision.grant_id:
+        return
+    if decision.grant_id in _ANNOUNCED:
+        return
+    _ANNOUNCED.add(decision.grant_id)
+    logger.warning(
+        "rotascale: grant %s is in %s mode and is NOT refusing anything. "
+        "Decisions are being evaluated and recorded, and every one is being "
+        "allowed through. Promote it to enforce when the recorded refusals look "
+        "right. See the grant's rollout report.",
+        decision.grant_id, decision.enforcement_mode,
+    )
 
 
 def _for(decision: Decision) -> Exception:
