@@ -84,8 +84,21 @@ def _text(candidate: Any) -> str | None:
 
 
 class _WatchedModels:
-    def __init__(self, inner: Any, capture_content: bool, limit: int) -> None:
+    def __init__(self, inner: Any, capture_content: bool, limit: int,
+                 root: Any = None) -> None:
         self._inner = inner
+        # subhadipmitra@: Holds the ROOT client, not just `inner.models`.
+        #
+        # `watch_gemini(genai.Client()).models.generate_content(...)` leaves the
+        # wrapper temporary: once `.models` is taken, the outer object is
+        # collectable, and with it the only reference to the genai Client —
+        # which closes its transport on __del__. The next call then fails with
+        # "Cannot send a request, as the client has been closed", from a line
+        # that looks entirely correct.
+        #
+        # Found against the real SDK. The fakes in the tests are plain objects
+        # with no __del__, so they could never surface it.
+        self._root = root
         self._capture = capture_content
         self._limit = limit
 
@@ -183,7 +196,8 @@ class _WatchedModels:
 class _WatchedClient:
     def __init__(self, inner: Any, capture_content: bool, limit: int) -> None:
         self._inner = inner
-        self.models = _WatchedModels(inner.models, capture_content, limit)
+        self.models = _WatchedModels(inner.models, capture_content, limit,
+                                     root=inner)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

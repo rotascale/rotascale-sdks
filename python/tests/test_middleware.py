@@ -144,7 +144,9 @@ class TestAnthropic:
             client.messages.create(model="claude-sonnet-5", max_tokens=100, messages=[])
         payload = steps[0]["payload"]
         assert payload["provider"] == "anthropic"
-        assert payload["usage"]["input_tokens"] == 20
+        # Normalised, not Anthropic's own names — see
+        # test_every_middleware_names_token_counts_the_same_way.
+        assert payload["usage"]["prompt_tokens"] == 20
 
     def test_tool_use_blocks_are_surfaced(self):
         """A tool_use block means the model asked to ACT — the interesting part."""
@@ -1168,3 +1170,111 @@ def test_autogen_hitting_the_round_cap_is_a_finding_not_an_ending():
                    if s["kind"] == "plan"
                    and s["payload"].get("finding") == "group_chat_hit_round_cap")
     assert finding["turns"] == 2
+
+
+# --- cross-middleware consistency ------------------------------------------
+
+
+def test_every_middleware_names_token_counts_the_same_way():
+    """subhadipmitra@: The Anthropic middleware recorded `input_tokens` while
+    every other one recorded `prompt_tokens`. The numbers were right and the
+    field names were wrong, so a query summing usage across a workspace silently
+    missed every Anthropic call — the hardest kind of wrong to notice.
+
+    It survived because the FAKE in these tests had the same mistake baked in.
+    Only a call to the real API surfaced it.
+
+    This asserts the vocabulary directly, on the source, so the next middleware
+    cannot invent its own names.
+    """
+    import pathlib
+    import re
+
+    middleware = pathlib.Path(__file__).resolve().parents[1] / "src/rotascale/middleware"
+    banned = {"input_tokens", "output_tokens", "prompt_token_count",
+              "candidates_token_count", "inputTokens", "outputTokens"}
+
+    offenders = []
+    for path in sorted(middleware.glob("*.py")):
+        text = path.read_text()
+        # A banned name is fine on the RIGHT of a colon — that is reading the
+        # provider's field. It is only wrong as a key we write.
+        for match in re.finditer(r'"([A-Za-z_]+)"\s*:', text):
+            if match.group(1) in banned:
+                offenders.append(f"{path.name}: writes {match.group(1)!r} as a key")
+
+    assert not offenders, (
+        "these middlewares invent their own token vocabulary:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nRecord prompt_tokens / completion_tokens. Provider-specific "
+          "extras are welcome under their own names (thinking_tokens, "
+          "cache_read_tokens), but the two everyone has must match or usage "
+          "cannot be summed across providers."
+    )
+
+
+def test_anthropic_usage_is_normalised():
+    """The specific regression."""
+    steps: list[dict] = []
+    client = make_client(steps)
+    usage = SimpleNamespace(input_tokens=15, output_tokens=5,
+                            cache_read_input_tokens=100)
+    response = SimpleNamespace(model="claude-haiku-4-5-20251001", id="m",
+                               stop_reason="end_turn", usage=usage, content=[])
+
+    with client.witness("agt_1"):
+        watch_anthropic(SimpleNamespace(messages=SimpleNamespace(
+            create=lambda **kw: response))).messages.create(model="x", messages=[])
+
+    recorded = next(s for s in steps if s["kind"] == "llm_call")["payload"]["usage"]
+    assert recorded["prompt_tokens"] == 15
+    assert recorded["completion_tokens"] == 5
+    # Anthropic-specific and worth keeping: cache reads bill differently and
+    # are invisible in the other two.
+    assert recorded["cache_read_tokens"] == 100
+
+
+def test_a_wrapper_keeps_the_root_client_alive():
+    """subhadipmitra@: `watch_gemini(genai.Client()).models.generate_content(...)`
+    leaves the wrapper temporary. Once `.models` is taken, the outer object is
+    collectable — and with it the only reference to the provider's client, which
+    closes its transport on `__del__`. The next call then fails with "the client
+    has been closed", from a line that looks entirely correct.
+
+    Found against the real google-genai SDK. The fakes here are plain objects
+    with no `__del__`, so nothing in this file could ever have surfaced it —
+    which is exactly why the assertion is on the reference, not on behaviour.
+    """
+    import gc
+
+    from rotascale.middleware import watch_gemini, watch_openai
+
+    closed: list[str] = []
+
+    class _Closes:
+        def __init__(self, label): self._label = label
+        def __del__(self): closed.append(self._label)
+
+    class _GeminiClient(_Closes):
+        def __init__(self):
+            super().__init__("gemini")
+            self.models = SimpleNamespace(generate_content=lambda **kw: None)
+
+    class _OpenAIClient(_Closes):
+        def __init__(self):
+            super().__init__("openai")
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kw: None))
+
+    # Exactly the one-liner a customer writes, with the wrapper discarded.
+    models = watch_gemini(_GeminiClient()).models
+    completions = watch_openai(_OpenAIClient()).chat.completions
+    gc.collect()
+
+    assert closed == [], (
+        f"the provider client was collected while still in use: {closed}. "
+        f"Its transport is now closed and the next call will fail."
+    )
+    # Held through the surviving handle, which is the mechanism.
+    assert models._root is not None
+    assert completions._root is not None

@@ -19,8 +19,13 @@ from rotascale.middleware._common import logger, report_served_model, truncate
 
 
 class _WatchedCompletions:
-    def __init__(self, inner: Any, capture_content: bool, limit: int) -> None:
+    def __init__(self, inner: Any, capture_content: bool, limit: int,
+                 root: Any = None) -> None:
         self._inner = inner
+        # See the note in gemini_api: the root client must be held, or
+        # `watch_openai(OpenAI()).chat.completions.create(...)` can collect it
+        # mid-use and close its transport.
+        self._root = root
         self._capture = capture_content
         self._limit = limit
 
@@ -110,9 +115,12 @@ class _WatchedCompletions:
 
 
 class _WatchedChat:
-    def __init__(self, inner: Any, capture_content: bool, limit: int) -> None:
+    def __init__(self, inner: Any, capture_content: bool, limit: int,
+                 root: Any = None) -> None:
         self._inner = inner
-        self.completions = _WatchedCompletions(inner.completions, capture_content, limit)
+        self._root = root
+        self.completions = _WatchedCompletions(inner.completions, capture_content,
+                                               limit, root=root)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -121,7 +129,8 @@ class _WatchedChat:
 class _WatchedClient:
     def __init__(self, inner: Any, capture_content: bool, limit: int) -> None:
         self._inner = inner
-        self.chat = _WatchedChat(inner.chat, capture_content, limit)
+        self.chat = _WatchedChat(inner.chat, capture_content, limit,
+                                 root=inner)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

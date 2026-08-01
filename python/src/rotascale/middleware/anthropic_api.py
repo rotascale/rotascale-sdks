@@ -38,8 +38,21 @@ class _WatchedMessages:
         usage = getattr(response, "usage", None)
         if usage is not None:
             step["usage"] = {
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None),
+                # subhadipmitra@: NORMALISED, not Anthropic's own names.
+                #
+                # Every other middleware records prompt_tokens/completion_tokens.
+                # This one recorded Anthropic's input_tokens/output_tokens, so a
+                # query summing usage across a workspace silently missed every
+                # Anthropic call — the numbers were right and the field names
+                # were wrong, which is the hardest kind of wrong to notice.
+                #
+                # Found by calling the real API. The fake in the tests had the
+                # same mistake baked in, so the test agreed with the bug.
+                "prompt_tokens": getattr(usage, "input_tokens", None),
+                "completion_tokens": getattr(usage, "output_tokens", None),
+                # Anthropic-specific and worth keeping: cache reads are billed
+                # differently and are invisible in the other two.
+                "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None),
             }
         content = getattr(response, "content", None) or []
         # A tool_use block means the model asked to act — the interesting part.
