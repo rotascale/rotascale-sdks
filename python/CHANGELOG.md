@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+**The reference validator.** `RequireCapability` is the same guarantee 0.3.0
+made possible, in one line of configuration instead of an afternoon per
+resource:
+
+```python
+from rotascale.resource import RequireCapability
+
+app.add_middleware(
+    RequireCapability,
+    audience="https://payments.acme.internal",
+    protect=["/refund"],
+    amount_minor=lambda body: body["amount_minor"],
+)
+```
+
+ASGI, so it works with FastAPI, Starlette, Django's async stack or Quart —
+it speaks the protocol rather than any framework.
+
+`amount_minor` is **required**. A validator that checks the signature and not
+the action returns 200 for every legitimate request and 403 for an unsigned
+one, so it looks exactly like a working guard while waving through an agent
+asking ten times what it was authorised for. Omitting it raises at
+construction, which is the only moment that mistake is visible before it
+matters; a resource with genuinely no quantity to compare passes
+`signature_only=True` and says so.
+
+Honest retries get the recorded answer rather than a refusal, so a lost
+response does not become a failed payment. A body the extractor cannot read is
+treated as unbounded, not as zero — otherwise a malformed request would be the
+way around the check. An unreachable JWK set answers **503, never 403**:
+"we could not check" and "you are not authorised" need opposite responses.
+
 ## 0.3.0 — 2026-08-02
 
 **A resource can now refuse.** `rotascale.capability` verifies a capability
