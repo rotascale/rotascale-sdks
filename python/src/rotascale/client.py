@@ -153,18 +153,24 @@ class Agent:
     #: key is a DIFFERENT agent from the one under `rota_live_` — and it cannot
     #: exercise the live agent's grants.
     #:
+    #: The rungs are `dev`, `staging`, `prod`. `live` and `test` are still
+    #: accepted by the server as aliases for `prod` and `dev`, so an older
+    #: deployment keeps working.
+    #:
     #: Worth asserting in a deployment check. A production process running on a
-    #: test key is governed, recorded, and entirely separate from the subject
+    #: dev key is governed, recorded, and entirely separate from the subject
     #: whose grants somebody signed for.
-    environment: str = "live"
+    environment: str = "prod"
 
     def __str__(self) -> str:
-        # subhadipmitra@: The environment appears only when it is NOT `live`.
-        # Prefixing every log line in production with `live/` is noise, and
-        # noise is what stops people reading logs. `test/refund-assistant` in a
+        # subhadipmitra@: The environment appears only when it is NOT `prod`.
+        # Prefixing every log line in production with `prod/` is noise, and
+        # noise is what stops people reading logs. `dev/refund-assistant` in a
         # production log is the thing worth seeing, and it stands out precisely
         # because the ordinary case is unadorned.
-        return self.slug if self.environment == "live" else f"{self.environment}/{self.slug}"
+        if self.environment in ("prod", "live"):
+            return self.slug
+        return f"{self.environment}/{self.slug}"
 
 
 class Trajectory:
@@ -425,7 +431,7 @@ class Rotascale:
             slug=seen["slug"],
             status=seen["status"],
             governed=seen["governed"],
-            environment=seen.get("environment", "live"),
+            environment=seen.get("environment", "prod"),
         )
         if seen.get("notice"):
             # Warned once, at startup, where somebody is still watching the
@@ -468,9 +474,36 @@ class Rotascale:
             body["model"] = {"name": model, "provider": provider,
                              "version": model_version}
         try:
-            self._post(f"/v1/agents/{agent_id}/provenance", body)
+            seen = self._post(f"/v1/agents/{agent_id}/provenance", body)
         except Exception:
             logger.warning("rotascale: could not report provenance", exc_info=True)
+            return
+
+        # subhadipmitra@: Reported AT STARTUP, in the process that is deploying,
+        # because that is the only place somebody can still act on it.
+        #
+        # A version change was previously visible only in the console — which is
+        # not where the person rolling out a release is looking, and by the time
+        # they look the agent has been running against grants attested to a
+        # configuration it no longer has.
+        if seen.get("unchanged"):
+            logger.info("rotascale: %s configuration unchanged (v%s)",
+                        agent_id, seen.get("version"))
+            return
+
+        previous = seen.get("previous_version")
+        if previous is None:
+            logger.info("rotascale: %s registered at v%s (first configuration)",
+                        agent_id, seen.get("version"))
+        else:
+            logger.info("rotascale: %s is now v%s, was v%s",
+                        agent_id, seen.get("version"), previous)
+
+        # WARNING, not info. Grants bound to the previous configuration will
+        # report drift, and shipping a version bump without noticing that is
+        # how an agent ends up running under authority nobody re-attested.
+        for finding in seen.get("findings") or []:
+            logger.warning("rotascale: %s", finding)
 
     # --- capture ----------------------------------------------------------
 

@@ -364,7 +364,7 @@ def test_the_readme_zero_argument_form_works(monkeypatch):
 # --- an agent names itself --------------------------------------------------
 
 
-def _resolver(status="discovered", governed=False, notice=None, environment="live"):
+def _resolver(status="discovered", governed=False, notice=None, environment="prod"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/agents/resolve":
             import json
@@ -504,12 +504,69 @@ def test_the_real_parameter_is_of_course_unaffected():
 
 
 def test_a_test_environment_agent_says_so_when_printed():
-    """subhadipmitra@: A production log line reading `test/refund-assistant` is
+    """subhadipmitra@: A production log line reading `dev/refund-assistant` is
     the signal that a process is running on the wrong key — governed and
     recorded, but entirely separate from the subject whose grants somebody
     signed for. It stands out because the ordinary case carries no prefix."""
-    client = make_client(_resolver(environment="test"))
+    client = make_client(_resolver(environment="dev"))
     agent = client.agent("refund-assistant")
 
-    assert agent.environment == "test"
-    assert str(agent) == "test/refund-assistant"
+    assert agent.environment == "dev"
+    assert str(agent) == "dev/refund-assistant"
+
+
+def test_a_version_bump_is_reported_where_the_deployer_can_see_it(caplog):
+    """subhadipmitra@: The point of #101.
+
+    A process used to report its provenance and learn nothing back, so a
+    version change surfaced only in the console — which is not where the person
+    rolling out a release is looking. By the time they look, the agent is
+    already running against grants attested to a configuration it no longer has.
+    """
+    import logging
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provenance"):
+            return httpx.Response(201, json={
+                "id": "prv_2", "version": 8, "content_hash": "c71b",
+                "unchanged": False, "previous_version": 7,
+                "grants_bound_to_previous": 2,
+                "findings": [
+                    "2 active grant(s) were issued against v7. They will report "
+                    "provenance drift until re-attested.",
+                ],
+            })
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    with caplog.at_level(logging.INFO, logger="rotascale"):
+        client.report_provenance("agt_1", prompt_version="2.4.0")
+
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "is now v8, was v7" in text
+    # The finding is a WARNING, not info: shipping a bump without noticing this
+    # is how an agent runs under authority nobody re-attested.
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+    assert "provenance drift" in text
+
+
+def test_an_unchanged_configuration_does_not_shout(caplog):
+    """The SDK reports at every process start. A fleet restarting nightly must
+    not fill the logs with warnings about nothing having happened."""
+    import logging
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provenance"):
+            return httpx.Response(201, json={
+                "id": "prv_1", "version": 7, "content_hash": "a3f9",
+                "unchanged": True, "previous_version": 7,
+                "grants_bound_to_previous": 0, "findings": [],
+            })
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    with caplog.at_level(logging.INFO, logger="rotascale"):
+        client.report_provenance("agt_1", prompt_version="2.3.1")
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "unchanged" in "\n".join(r.getMessage() for r in caplog.records)
