@@ -8,7 +8,7 @@ name = "rotascale"
 # Trust Intelligence Platform — a different product under the same name. PyPI
 # never allows a version to be replaced, so superseding is the only "overwrite"
 # there is.
-version = "0.3.0"
+version = "0.3.1"
 description = "Govern what your agents are allowed to do, and prove what they did"
 readme = "README.md"
 requires-python = ">=3.10"

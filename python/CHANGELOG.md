@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-08-03
 
 **The reference validator.** `RequireCapability` is the same guarantee 0.3.0
 made possible, in one line of configuration instead of an afternoon per
