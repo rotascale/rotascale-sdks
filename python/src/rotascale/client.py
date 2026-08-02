@@ -65,6 +65,18 @@ class Decision:
     policy_outcome: str | None = None
     enforcement_mode: str | None = None
 
+    # subhadipmitra@: The credential for THIS action, when the grant names a
+    # resource. Present it to that resource and it can verify offline, holding
+    # nothing of ours but a cached public key.
+    #
+    # This is the difference between advice and enforcement. Everything else on
+    # this object is something the agent may ignore — the code that asks and the
+    # code that acts are the same code. A token is checked by somebody else.
+    #
+    # None when the grant has no audience, which is most grants.
+    capability: str | None = None
+    capability_expires_at: str | None = None
+
     @property
     def needs_review(self) -> bool:
         return self.outcome in ("review_sync", "review_async")
@@ -614,6 +626,8 @@ class Rotascale:
             reason=raw["reason"],
             grant_id=raw.get("grant_id"),
             ledger_id=raw.get("ledger_id"),
+            capability=raw.get("capability"),
+            capability_expires_at=raw.get("capability_expires_at"),
             remaining_amount_minor=raw.get("remaining_amount_minor"),
             remaining_count=raw.get("remaining_count"),
             findings=raw.get("findings") or [],
