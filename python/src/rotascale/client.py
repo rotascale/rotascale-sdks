@@ -477,11 +477,23 @@ class Rotascale:
         process start is correct and cheap. Never raises: this is capture.
         """
         agent_id = agent.id if isinstance(agent, Agent) else agent
-        body: dict[str, Any] = {
-            "prompt_version": prompt_version,
-            "tool_manifest": tools or {},
-            "knowledge_sources": knowledge or {},
-        }
+        # subhadipmitra@: Unset fields are OMITTED, not sent as `{}`.
+        #
+        # This method has partial callers by design — the middleware knows which
+        # model served a call and nothing about tools. Sending `{}` told the
+        # platform "this agent has no tools", which it recorded as an
+        # observation, so the manifest alternated between real and empty and
+        # `version_tolerance` compared emptiness to emptiness.
+        #
+        # Absent is not zero. To say an agent genuinely has no tools, pass
+        # `tools={"tools": []}` — a statement rather than a silence.
+        body: dict[str, Any] = {}
+        if prompt_version is not None:
+            body["prompt_version"] = prompt_version
+        if tools is not None:
+            body["tool_manifest"] = tools
+        if knowledge is not None:
+            body["knowledge_sources"] = knowledge
         if model:
             body["model"] = {"name": model, "provider": provider,
                              "version": model_version}
