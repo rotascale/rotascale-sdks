@@ -12,7 +12,13 @@ import time
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from rotascale.capability import Claim, Refused, public_keys_from_jwks, verify
+from rotascale.capability import (
+    Claim,
+    Refused,
+    SeenTokens,
+    public_keys_from_jwks,
+    verify,
+)
 
 AUDIENCE = "https://payments.acme.internal"
 KID = "ed25519:test"
@@ -145,3 +151,82 @@ def test_keys_can_be_supplied_directly_so_the_fetch_stays_the_callers(
     resource cannot control."""
     keys = public_keys_from_jwks(jwks)
     assert verify(_token(signing_key), audience=AUDIENCE, keys=keys).tool == "issue_refund"
+
+
+# --- replay defence ---------------------------------------------------------
+
+
+def _claim(jti: str = "cap_01A", exp_offset: int = 60) -> Claim:
+    return Claim(tool="issue_refund", amount_minor=1, currency="EUR",
+                 resource_ref="TICKET-1", jti=jti,
+                 expires_at=int(time.time()) + exp_offset,
+                 grant_id=None, ledger_id=None, attested_by=None,
+                 signed_by_platform=True, enforcement_tier="observed", raw={})
+
+
+def test_the_first_presentation_proceeds():
+    seen = SeenTokens()
+    assert seen.remember(_claim()) is None
+
+
+def test_an_honest_retry_gets_THE_SAME_ANSWER_not_a_refusal():
+    """subhadipmitra@: The case that makes a naive seen-set worse than none.
+
+    The action succeeded, the response was lost, the client retries with the
+    same token. Refusing turns one lost packet into a failed payment, and the
+    customer's remedy is to stop using us.
+    """
+    seen, claim = SeenTokens(), _claim()
+
+    assert seen.remember(claim) is None
+    seen.record(claim, {"refund_id": "rf_991"})
+
+    # Same token again — the recorded outcome, not an error.
+    assert seen.remember(claim) == {"refund_id": "rf_991"}
+
+
+def test_a_concurrent_replay_is_refused_rather_than_allowed_to_act():
+    """subhadipmitra@: The bug a weaker version of this test hid.
+
+    Presented twice before the first presentation finishes, a naive seen-set
+    returns None — indistinguishable from "first time, proceed" — and the
+    second caller acts. There is no recorded answer to hand back, so the only
+    honest options are refuse or act twice, and acting twice is the thing this
+    class exists to prevent.
+    """
+    seen, claim = SeenTokens(), _claim()
+    assert seen.remember(claim) is None          # first, in flight
+
+    with pytest.raises(Refused, match="already in flight"):
+        seen.remember(claim)
+
+    assert len(seen) == 1, "the token was counted twice"
+
+
+def test_an_action_that_legitimately_returned_none_is_not_mistaken_for_in_flight():
+    """A resource whose action returns nothing must still get idempotency."""
+    seen, claim = SeenTokens(), _claim()
+    assert seen.remember(claim) is None
+    seen.record(claim, None)                     # the action returned None
+
+    assert seen.remember(claim) is None          # the recorded answer, not a refusal
+
+
+def test_a_different_token_is_not_confused_with_a_replay():
+    seen = SeenTokens()
+    assert seen.remember(_claim("cap_01A")) is None
+    assert seen.remember(_claim("cap_01B")) is None
+    assert len(seen) == 2
+
+
+def test_the_set_bounds_itself_by_token_lifetime():
+    """subhadipmitra@: No eviction policy anybody has to tune. An entry older
+    than any possible unexpired token cannot be replayed anyway."""
+    seen = SeenTokens()
+    seen.remember(_claim("cap_old", exp_offset=-10))
+    assert len(seen) == 1
+
+    # A later presentation sweeps anything that can no longer be valid.
+    seen.remember(_claim("cap_new"), now=int(time.time()) + 1)
+    assert len(seen) == 1
+    assert "cap_old" not in seen._seen

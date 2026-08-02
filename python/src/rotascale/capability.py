@@ -40,7 +40,7 @@ import base64
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Claim", "Refused", "public_keys_from_jwks", "verify"]
+__all__ = ["Claim", "Refused", "SeenTokens", "public_keys_from_jwks", "verify"]
 
 
 class Refused(Exception):
@@ -176,3 +176,88 @@ def verify(
         enforcement_tier=rot.get("enforcement_tier"),
         raw=claims,
     )
+
+
+class SeenTokens:
+    """Refuse a replayed capability token — without breaking honest retries.
+
+    subhadipmitra@: A capability token is a bearer credential. Anyone holding
+    one can present it, so a resource must refuse the second presentation.
+
+    **The case that makes a naive seen-set worse than none** is the honest
+    retry: the action succeeded, the response was lost in the network, and the
+    client retries with the same token. Refusing that turns one lost packet
+    into a failed payment, and the customer's remedy is to stop using us. So
+    this remembers what the action RETURNED and replays that answer, which is
+    idempotency rather than refusal.
+
+    A replay from a *different* caller is still indistinguishable from a
+    retry here — that is the honest limit of a seen-set, and it is why
+    two-phase settlement (`#108`) is the real answer for consequential
+    actions. This is the floor, not the ceiling.
+
+    Bounded by the token lifetime, not by a count. Entries older than any
+    possible unexpired token cannot be replayed anyway, so the set stays small
+    on its own and needs no eviction policy anybody has to tune.
+
+        seen = SeenTokens()
+
+        claim = verify(token, audience=AUD, jwks=KEYS)
+        cached = seen.remember(claim)
+        if cached is not None:
+            return cached                    # honest retry: the same answer
+        result = do_the_refund(claim)
+        seen.record(claim, result)
+        return result
+
+    Single process only. A resource behind several replicas needs a shared
+    store — Redis with the same TTL — and this is deliberately not that, so
+    nobody mistakes an in-memory set for a distributed guarantee.
+    """
+
+    #: Distinguishes "recorded, no result yet" from "recorded, returned None".
+    #: Without it a token presented twice CONCURRENTLY reads as a first
+    #: presentation, and the second caller acts — the exact thing this refuses.
+    _IN_FLIGHT = object()
+
+    def __init__(self) -> None:
+        self._seen: dict[str, tuple[int, Any]] = {}
+
+    def remember(self, claim: Claim, *, now: int | None = None) -> Any | None:
+        """Record this token, or return the result the first presentation gave.
+
+        Returns None the first time — proceed. Returns the recorded result on a
+        replay, which the caller should return instead of acting again.
+        """
+        import time
+
+        current = now if now is not None else int(time.time())
+        self._evict(current)
+
+        if claim.jti in self._seen:
+            result = self._seen[claim.jti][1]
+            if result is self._IN_FLIGHT:
+                # Presented again before the first presentation finished. That
+                # is either a genuine concurrent replay or a client retrying
+                # faster than the action completes, and neither may act twice.
+                # There is no recorded answer to hand back, so this refuses.
+                raise Refused(
+                    f"capability {claim.jti} is already in flight; refusing to "
+                    f"act on it a second time")
+            return result
+        # Held until the token could no longer be valid to anyone.
+        self._seen[claim.jti] = (claim.expires_at, self._IN_FLIGHT)
+        return None
+
+    def record(self, claim: Claim, result: Any) -> None:
+        """Attach the outcome, so a retry gets the answer rather than a refusal."""
+        if claim.jti in self._seen:
+            self._seen[claim.jti] = (claim.expires_at, result)
+
+    def _evict(self, now: int) -> None:
+        expired = [jti for jti, (exp, _) in self._seen.items() if exp < now]
+        for jti in expired:
+            del self._seen[jti]
+
+    def __len__(self) -> int:
+        return len(self._seen)
