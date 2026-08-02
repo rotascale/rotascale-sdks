@@ -43,12 +43,21 @@ Issues = "https://github.com/rotascale/rotascale-console/issues"
 
 [project.optional-dependencies]
 mcp = []          # duck-typed; no mcp dependency needed
+# subhadipmitra@: For verifying capability tokens AT A RESOURCE. An extra, not a
+# core dependency: the overwhelming majority of installs are agents, which mint
+# nothing and verify nothing, and the base package deliberately carries no
+# cryptography stack. A resource that needs it asks for it.
+capability = ["pyjwt>=2.9", "cryptography>=42"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
+    # The capability extra, so the validator is tested the way a resource
+    # installs it.
+    "pyjwt>=2.9",
+    "cryptography>=42",
 ]
 
 [build-system]
