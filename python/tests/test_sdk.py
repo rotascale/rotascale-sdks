@@ -364,7 +364,7 @@ def test_the_readme_zero_argument_form_works(monkeypatch):
 # --- an agent names itself --------------------------------------------------
 
 
-def _resolver(status="discovered", governed=False, notice=None):
+def _resolver(status="discovered", governed=False, notice=None, environment="live"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/agents/resolve":
             import json
@@ -372,6 +372,7 @@ def _resolver(status="discovered", governed=False, notice=None):
             return httpx.Response(200, json={
                 "id": "agt_resolved", "slug": slug, "status": status,
                 "discovered": True, "governed": governed, "notice": notice,
+                "environment": environment,
             })
         if request.url.path == "/v1/trajectories":
             return httpx.Response(201, json={"id": "trj_1"})
@@ -500,3 +501,15 @@ def test_the_real_parameter_is_of_course_unaffected():
         pass
 
     assert calls[0]["external_ref"] == "TICKET-1"
+
+
+def test_a_test_environment_agent_says_so_when_printed():
+    """subhadipmitra@: A production log line reading `test/refund-assistant` is
+    the signal that a process is running on the wrong key — governed and
+    recorded, but entirely separate from the subject whose grants somebody
+    signed for. It stands out because the ordinary case carries no prefix."""
+    client = make_client(_resolver(environment="test"))
+    agent = client.agent("refund-assistant")
+
+    assert agent.environment == "test"
+    assert str(agent) == "test/refund-assistant"

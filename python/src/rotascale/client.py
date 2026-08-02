@@ -147,9 +147,24 @@ class Agent:
     slug: str
     status: str
     governed: bool
+    #: subhadipmitra@: Which environment this agent lives in, derived from the
+    #: API KEY rather than from anything the process chose. Identity is
+    #: `(workspace, environment, slug)`, so the same slug under a `rota_test_`
+    #: key is a DIFFERENT agent from the one under `rota_live_` — and it cannot
+    #: exercise the live agent's grants.
+    #:
+    #: Worth asserting in a deployment check. A production process running on a
+    #: test key is governed, recorded, and entirely separate from the subject
+    #: whose grants somebody signed for.
+    environment: str = "live"
 
     def __str__(self) -> str:
-        return self.slug
+        # subhadipmitra@: The environment appears only when it is NOT `live`.
+        # Prefixing every log line in production with `live/` is noise, and
+        # noise is what stops people reading logs. `test/refund-assistant` in a
+        # production log is the thing worth seeing, and it stands out precisely
+        # because the ordinary case is unadorned.
+        return self.slug if self.environment == "live" else f"{self.environment}/{self.slug}"
 
 
 class Trajectory:
@@ -410,6 +425,7 @@ class Rotascale:
             slug=seen["slug"],
             status=seen["status"],
             governed=seen["governed"],
+            environment=seen.get("environment", "live"),
         )
         if seen.get("notice"):
             # Warned once, at startup, where somebody is still watching the
