@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### `rotascale_mcp.guard` — the server side
+
+`CapabilityGuard` verifies a capability token before an MCP tool runs, offline,
+against a cached public key.
+
+The proxy is a real enforcement point with one gap: it is **bypassable by not
+using that tool**. An agent talking to your MCP server directly, or a second
+agent nobody routed through the proxy, never meets it. The guard lives in the
+server, so there is nothing to route around.
+
+```python
+guard = CapabilityGuard(
+    audience="mcp://contracts.acme.internal",
+    amounts={"settle_payment": lambda args: args["amount_minor"]},
+)
+
+async def call_tool(name, arguments):
+    arguments = guard.check(name, arguments)   # raises Refused, or returns
+    return await tools[name](**arguments)      # cleaned of the token
+```
+
+Everything is protected by default — a server that lists its protected tools
+will forget one. A protected tool with no way to compare what it was asked for
+is **refused**, not allowed: the token's existence becoming the whole
+authorisation is a real position, and somebody has to take it deliberately by
+naming the tool in `quantityless`.
+
+`aud` names the server, not the tool, so the token's `act.tool` is checked
+against the tool being called — otherwise a token for a cheap read would
+authorise an expensive write on the same server.
+
+The token travels in `_meta` (the protocol's own slot) or in a reserved
+argument key for clients that cannot set it, and is stripped before the tool
+sees it. A tool whose signature grew a parameter because of us is one we broke.
+
+Install with `pip install rotascale-mcp[guard]` — the common install is the
+proxy, which sits on the agent side and verifies nothing.
+
 ## 0.1.0 — 2026-08-01
 
 First release. Two surfaces for governing agents that speak MCP, including

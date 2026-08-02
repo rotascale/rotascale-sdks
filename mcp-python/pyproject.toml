@@ -37,8 +37,22 @@ Issues = "https://github.com/rotascale/rotascale-console/issues"
 rotascale-mcp = "rotascale_mcp.__main__:main"
 rotascale-mcp-proxy = "rotascale_mcp.proxy_main:main"
 
+[project.optional-dependencies]
+# subhadipmitra@: The SERVER-side guard (`rotascale_mcp.guard`), which verifies
+# capability tokens and therefore needs a cryptography stack. An extra rather
+# than a core dependency: the common install of this package is the PROXY,
+# which sits on the agent side, mints nothing and verifies nothing.
+guard = ["rotascale[capability]>=0.3.1"]
+
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    # The guard extra, so it is tested the way an MCP server installs it.
+    "pyjwt>=2.9",
+    "cryptography>=42",
+]
 
 [build-system]
 requires = ["hatchling"]

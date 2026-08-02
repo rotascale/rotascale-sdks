@@ -250,7 +250,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -686,14 +686,20 @@ wheels = [
 
 [[package]]
 name = "rotascale"
-version = "0.2.0"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/31/57c8f052801bddc3aa056c5557b6a2be6d04ba6f8bc90a82e628557023af/rotascale-0.2.0.tar.gz", hash = "sha256:dd7c148ccf9cc3607f45afab01f793fd13b029907253e91d5ae3d706925dd4bb", size = 40788, upload-time = "2026-08-01T15:20:35.964Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/88/5a67f03a01a719942528316d57f83c5569c39cb548bc17a0ab2caa3cd4ac/rotascale-0.3.1.tar.gz", hash = "sha256:1e4d99338a138e52b398f8f26c085934a1de4dd82c3a8e8813ea15d4ae985c1a", size = 103529, upload-time = "2026-08-02T21:37:24.825Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/20/b89c8b97d0423e207ac13ceeb4b0511cdc8fd0427ef2f34fa466d1855049/rotascale-0.2.0-py3-none-any.whl", hash = "sha256:859501cf680414a3c88db76a944f77c55041d36f163b09f5ea45b2b1bc996c73", size = 25754, upload-time = "2026-08-01T15:20:34.497Z" },
+    { url = "https://files.pythonhosted.org/packages/df/ba/308c7d78a2ba8a82a41692fc8d91af635e9b84cfe9d62a000e77c976f8f7/rotascale-0.3.1-py3-none-any.whl", hash = "sha256:2cb6a0923cca7631b32723b9a8d17eb828f86713ebd2aa5317753a0b0b5294a5", size = 60035, upload-time = "2026-08-02T21:37:23.589Z" },
+]
+
+[package.optional-dependencies]
+capability = [
+    { name = "cryptography" },
+    { name = "pyjwt" },
 ]
 
 [[package]]
@@ -705,8 +711,15 @@ dependencies = [
     { name = "rotascale" },
 ]
 
+[package.optional-dependencies]
+guard = [
+    { name = "rotascale", extra = ["capability"] },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "cryptography" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -716,10 +729,14 @@ dev = [
 requires-dist = [
     { name = "mcp", specifier = ">=1.2" },
     { name = "rotascale", specifier = ">=0.2.0" },
+    { name = "rotascale", extras = ["capability"], marker = "extra == 'guard'", specifier = ">=0.3.1" },
 ]
+provides-extras = ["guard"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cryptography", specifier = ">=42" },
+    { name = "pyjwt", specifier = ">=2.9" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.8" },
