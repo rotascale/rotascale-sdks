@@ -40,7 +40,8 @@ import base64
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Claim", "Refused", "SeenTokens", "public_keys_from_jwks", "verify"]
+__all__ = ["Claim", "Refused", "SeenTokens", "public_keys_from_jwks",
+           "report_incident", "verify"]
 
 
 class Refused(Exception):
@@ -261,3 +262,62 @@ class SeenTokens:
 
     def __len__(self) -> int:
         return len(self._seen)
+
+def report_incident(
+    token: str,
+    *,
+    kind: str = "replayed",
+    base_url: str = "https://api.rotascale.com",
+    source_hint: str | None = None,
+    detail: str | None = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Tell Rotascale a token turned up where it should not have.
+
+    subhadipmitra@: A resource is the ONLY party that sees presentations, so it
+    is the only one that can report a replay. This is how it does that while
+    holding nothing of ours: the report presents the token, and the signature on
+    the token is the credential. No API key, no account, no coupling.
+
+    Entirely optional, and it must stay that way. A resource that never calls
+    this still refuses the replay locally — `SeenTokens` does not need us — and
+    the whole point of offline verification is that our availability is not
+    theirs. So this never raises and never blocks: it returns True if the report
+    landed and False if it did not, and a False is not a reason to change what
+    the resource does about the token.
+
+        cached = seen.remember(claim)
+        if cached is not None:
+            report_incident(token, source_hint=request.remote_addr)
+            return cached
+
+    Note the ordering: refuse first, report second. Reporting is telemetry about
+    an attack; refusing is the control.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({
+        "token": token, "kind": kind,
+        "source_hint": source_hint, "detail": detail,
+    }).encode()
+    url = f"{base_url.rstrip('/')}/v1/capabilities/incidents"
+    if not url.startswith(("http://", "https://")):
+        # subhadipmitra@: `base_url` comes from the resource's own config, but
+        # a `file:` URL here would turn a reporting call into a local read.
+        # Checked rather than trusted, because this function is handed a string.
+        return False
+    request = urllib.request.Request(  # noqa: S310 — scheme checked above
+        url, data=payload, headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 — scheme checked above
+                request, timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        # Deliberately silent. A resource whose payment path emits warnings
+        # because our reporting endpoint is unreachable will remove the call,
+        # and then we lose the detection entirely.
+        return False
