@@ -40,7 +40,7 @@ import base64
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Claim", "Refused", "verify", "public_keys_from_jwks"]
+__all__ = ["Claim", "Refused", "public_keys_from_jwks", "verify"]
 
 
 class Refused(Exception):
