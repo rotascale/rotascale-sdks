@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0 — 2026-08-02
+
+**A resource can now refuse.** `rotascale.capability` verifies a capability
+token at the thing being protected — a payments service, an internal API — with
+no Rotascale client, no API key and no callback. Fetch the JWK set once, verify
+offline afterwards: our availability is not yours.
+
+Everything else in this SDK is *advice*. On the instrumented path the code that
+asks and the code that acts are the same code, so an agent can simply not ask.
+A token is checked by somebody else, and an agent that cannot produce a valid
+one cannot act.
+
+```python
+from rotascale.capability import verify, Refused
+
+claim = verify(token, audience="https://payments.acme.internal", jwks=KEYS)
+if claim.amount_minor < requested:
+    raise Forbidden("authorised for less than requested")
+```
+
+That last comparison is not optional. Verifying a signature proves *some*
+authority existed; comparing the claim against what was actually requested
+proves *this* one did.
+
+An optional extra — `pip install rotascale[capability]` — because the
+overwhelming majority of installs are agents, which neither mint nor verify,
+and the base package still carries no cryptography stack.
+
+**`Decision.capability`** carries the credential for that action when the grant
+names a resource. `None` otherwise, which is most grants.
+
+**`SeenTokens`** refuses a replayed token without breaking an honest retry. The
+action succeeded, the response was lost, the client retries — refusing that
+turns one lost packet into a failed payment, so it replays the recorded answer
+instead. A concurrent second presentation, where there is no answer yet, is
+refused.
+
+**Agent identity includes the environment.** `(workspace, environment, slug)`,
+taken from the API key. The same slug under a `rota_test_` key is a different
+governed subject from the one under `rota_live_`, and cannot exercise its
+grants. `str(agent)` shows the environment only when it is not production —
+`test/refund-assistant` in a production log is the thing worth seeing.
+
+**Provenance reports what changed.** `report_provenance()` no longer discards
+the response: it logs the version move, and warns when grants were attested
+against the configuration being replaced, or when a version string did not move
+while the content hash did.
+
 ## 0.2.2 — 2026-08-02
 
 **Ten frameworks, one line each.** Gemini, Bedrock, LangChain, LangGraph, ADK,
