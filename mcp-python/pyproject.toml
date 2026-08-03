@@ -1,6 +1,6 @@
 [project]
 name = "rotascale-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Govern any agent that speaks the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
 # MCP spec revises on its own schedule — pinning them together would force
 # pointless releases of one to keep up with the other.
 dependencies = [
-    "rotascale>=0.2.0",
+    "rotascale>=0.3.2",
     "mcp>=1.2",
 ]
 

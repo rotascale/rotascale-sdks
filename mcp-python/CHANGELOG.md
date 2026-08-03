@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1 — 2026-08-04
+
+A tool call refused because **no grant covers it** is now recorded as a
+decision rather than refused locally and written nowhere.
+
+It is the strongest refusal this product makes — the proxy reads the tool name
+off the wire and answers instead of forwarding, so the tool never runs and the
+agent gets no vote — and it was absent from every count of refusals, including
+the assurance file. A deployment enforcing hard at the proxy looked, in its own
+evidence, like one refusing nothing.
+
+Needs `rotascale>=0.3.2`.
+
 ## Unreleased
 
 ### `rotascale_mcp.guard` — the server side
