@@ -108,6 +108,9 @@ def main() -> int:
                 "finish_reason": "why it stopped",
                 "response": "the text",
             }, captured[-1])
+        except ImportError as exc:
+            print(f"\nOpenAI: NOT INSTALLED — {exc}")
+            results["openai"] = None
         except Exception as exc:
             print(f"\nOpenAI: FAILED — {type(exc).__name__}: {exc}")
             results["openai"] = False
@@ -132,6 +135,9 @@ def main() -> int:
                 print("  [MISS] usage uses Anthropic's own field names; they must "
                       "be normalised or usage cannot be summed across providers")
                 results["anthropic"] = False
+        except ImportError as exc:
+            print(f"\nAnthropic: NOT INSTALLED — {exc}")
+            results["anthropic"] = None
         except Exception as exc:
             print(f"\nAnthropic: FAILED — {type(exc).__name__}: {exc}")
             results["anthropic"] = False
@@ -158,6 +164,13 @@ def main() -> int:
             if thinking:
                 print(f"  [note] thinking_tokens {thinking} — billed, and absent "
                       f"from prompt/completion")
+        except ImportError as exc:
+            # subhadipmitra@: A missing PACKAGE is not a broken provider. The
+            # first version reported both as FAILED, so running this without
+            # the optional extras installed looked exactly like three providers
+            # having changed under us.
+            print(f"\nGemini: NOT INSTALLED — {exc}")
+            results["gemini"] = None
         except Exception as exc:
             print(f"\nGemini: FAILED — {type(exc).__name__}: {exc}")
             results["gemini"] = False
@@ -173,13 +186,44 @@ def main() -> int:
         print(f"validated: {', '.join(passed)}")
     if skipped:
         # Named, never silent. A skipped provider is an unvalidated one.
-        print(f"SKIPPED (no key): {', '.join(skipped)}")
+        print(f"NOT VALIDATED (no credential, or the client is not installed): "
+              f"{', '.join(skipped)}")
     if failed:
         print(f"FAILED: {', '.join(failed)}")
         return 1
+
     if not passed:
+        # subhadipmitra@: NOT a failure, and the distinction is the whole point
+        # of this exit code.
+        #
+        # It used to return 1 here, which made a repository with no credentials
+        # permanently red — indistinguishable from a provider that had actually
+        # broken. A weekly job that is always red gets muted within a month, and
+        # then the real break it exists to catch arrives invisibly. The failure
+        # mode of crying wolf is worse than the failure mode of being quiet.
+        #
+        # So it exits 0 and says loudly that it validated NOTHING, as a GitHub
+        # annotation that surfaces on the run rather than only in the log. An
+        # unvalidated provider still never looks like a validated one — that
+        # rule is kept by the words, not by the exit code.
         print("nothing was validated")
-        return 1
+        print(
+            "::warning title=No providers validated::"
+            "No provider was checked — each was missing a credential, a client "
+            "package, or both. Set OPENAI_API_KEY, ANTHROPIC_API_KEY and "
+            "GEMINI_API_KEY in repository secrets. Until then this job checks "
+            "nothing, and a provider changing under us would not be caught here."
+        )
+        return 0
+
+    if skipped:
+        # Some validated, some not. Green, because what ran passed — and
+        # annotated, because a partial answer presented as a whole one is the
+        # overclaiming this script exists to avoid.
+        print(
+            f"::warning title=Some providers unvalidated::"
+            f"{', '.join(skipped)} have no credentials and were not checked."
+        )
     return 0
 
 
