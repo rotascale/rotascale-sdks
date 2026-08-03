@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 — 2026-08-04
+
+`authorize()` accepts `grant_id=None`, meaning *"nothing authorises this"*.
+
+An enforcement point that reads a tool name off the wire may find that no grant
+names it. That is a decision worth recording — the action was refused, and the
+reason is that nothing covered it — and it previously went unrecorded, so the
+one refusal an agent cannot route around was absent from every count of
+refusals, including the assurance file.
+
+It always denies. There is no path by which naming no authority produces an
+allow.
+
 ## 0.3.1 — 2026-08-03
 
 **The reference validator.** `RequireCapability` is the same guarantee 0.3.0

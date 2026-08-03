@@ -252,7 +252,7 @@ class Trajectory:
 
     def authorize(
         self,
-        grant_id: str,
+        grant_id: str | None,
         scope: dict[str, list[str]] | None = None,
         /,
         *,
@@ -592,7 +592,7 @@ class Rotascale:
 
     def authorize(
         self,
-        grant_id: str,
+        grant_id: str | None,
         scope: dict[str, list[str]] | None = None,
         /,
         *,

@@ -159,6 +159,25 @@ class Governor:
                 self.trajectory.tool_call, tool, ungoverned=True,
                 note="no grant covers this tool")
             if REQUIRE_GRANT:
+                # subhadipmitra@: RECORDED as a decision, not refused locally
+                # (`#128`).
+                #
+                # This used to answer here and write nothing to the ledger, so
+                # the strongest refusal the product makes — a tool call stopped
+                # on the wire, which the agent cannot route around — was absent
+                # from every count of refusals, including the assurance file. A
+                # deployment enforcing hard at the proxy looked, in its own
+                # evidence, like one refusing nothing.
+                #
+                # Recorded with NO grant, which is the honest shape: the action
+                # was refused, and the reason is that nothing authorised it.
+                await asyncio.to_thread(
+                    self.client.authorize, None, {"tools": [tool]},
+                    trajectory_id=self.trajectory.id,
+                    raise_on_refusal=False,
+                    mcp_server=self.server_name,
+                    mcp_arguments=sorted(arguments)[:20],
+                )
                 return _blocked(
                     message_id, "deny",
                     f"No authority covers the tool {tool!r}, and this "
