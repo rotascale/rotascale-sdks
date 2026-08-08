@@ -76,9 +76,24 @@ Postgres, Keycloak and the Cedar services all run in your own environment, and
 const rotascale = new Rotascale({ baseUrl: "https://rotascale.internal" });
 ```
 
-The TypeScript middleware is not built yet — see the repository README for what
-exists in Python today. When it lands it will follow the same rule: duck-typed,
-no provider import, `openai-compat` rather than `openai`.
+```ts
+import { watchOpenAI, witness } from "@rotascale/sdk";
+import OpenAI from "openai";
+
+const llm = watchOpenAI(new OpenAI({ baseURL: "http://localhost:11434/v1" }));
+
+await witness(run, async () => {
+  await llm.chat.completions.create({ model: "llama3.2:3b", messages });
+  // the call is on the trajectory; no other change to the agent
+});
+```
+
+`watchAnthropic` is the same shape for `messages.create`. Both normalise usage
+to `prompt_tokens` / `completion_tokens`, so a fleet's numbers can be summed
+without knowing which provider served which call.
+
+Content capture is **off** by default and truncated when on. Tool **names** are
+recorded; their arguments are not.
 
 ## Refusals
 

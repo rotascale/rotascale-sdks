@@ -80,6 +80,66 @@ describe("enforcement fails closed", () => {
  * The Python SDK has the same shape (`_post` raises `HTTPStatusError` and
  * `authorize` catches bare `Exception`), so this is filed against it too.
  */
+/**
+ * A reused `external_ref` returns an EXISTING trajectory, possibly closed.
+ *
+ * subhadipmitra@: Found by running against the live deployment. `external_ref`
+ * is idempotent — that is a feature, it stops a retrying agent recording the
+ * same job twice — and it returns a trajectory that may already be sealed.
+ *
+ * Without this the caller gets a handle that looks like it works and records
+ * nothing: every step 422s, every 422 is swallowed by fail-open capture, and
+ * the evidence is gone. Not hypothetical — it silently ate the most important
+ * evidence in the demo once, which is why the Python SDK carries the same
+ * guard.
+ */
+describe("a reused external_ref does not silently eat evidence", () => {
+  function reopened(status: string) {
+    return vi.fn<typeof globalThis.fetch>(async () => new Response(
+      JSON.stringify({ id: "trj_existing", status }), { status: 200 }));
+  }
+
+  it("warns when the ref names an already-closed trajectory", async () => {
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    const client = new Rotascale({ fetch: reopened("completed"), logger });
+
+    await client.openTrajectory({ agentId: "agt_1", externalRef: "TICKET-1" });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("no-op for this block"));
+  });
+
+  it("says so through `recording`, so a caller can check", async () => {
+    const client = new Rotascale({ fetch: reopened("completed"), logger: silent });
+    const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "T" });
+    expect(t!.recording).toBe(false);
+  });
+
+  it("does not fire steps that would be refused anyway", async () => {
+    const fetchMock = reopened("completed");
+    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "T" });
+
+    await t!.step({ kind: "llm_call" });
+    await t!.close();
+
+    // One call — the open. A cascade of swallowed 422s teaches nobody
+    // anything and buries the one warning that matters.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("records normally when the trajectory is genuinely open", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => new Response(
+      JSON.stringify({ id: "trj_1", status: "open" }), { status: 200 }));
+    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+
+    const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "NEW" });
+    expect(t!.recording).toBe(true);
+    await t!.step({ kind: "plan" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("a refusal is not an outage", () => {
   it("does not fail open when the server answered", async () => {
     const client = new Rotascale({

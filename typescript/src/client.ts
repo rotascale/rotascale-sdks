@@ -227,12 +227,34 @@ export class Rotascale {
     goal?: Record<string, unknown>;
   }): Promise<Trajectory | null> {
     try {
-      const raw = await this.post<{ id: string }>("/v1/trajectories", {
-        agent_id: input.agentId,
-        external_ref: input.externalRef ?? null,
-        goal: input.goal ?? {},
-      }, this.captureTimeoutMs);
-      return new Trajectory(this, raw.id);
+      const raw = await this.post<{ id: string; status?: string }>(
+        "/v1/trajectories", {
+          agent_id: input.agentId,
+          external_ref: input.externalRef ?? null,
+          goal: input.goal ?? {},
+        }, this.captureTimeoutMs);
+
+      // subhadipmitra@: `external_ref` is IDEMPOTENT, so a retry — or a reused
+      // ref — returns an EXISTING trajectory, which may already be closed.
+      //
+      // Appending to a sealed record is rightly refused and re-closing it
+      // 422s, so without this the caller gets a cascade of swallowed errors
+      // and, much worse, a handle that records nothing while looking like it
+      // works. That is not hypothetical: it silently ate the most important
+      // evidence in the demo once, and the Python SDK carries the same guard
+      // for the same reason.
+      //
+      // Marked closed here, so the no-op is quiet and stated once rather than
+      // discovered per step.
+      const trajectory = new Trajectory(this, raw.id);
+      if (raw.status && raw.status !== "open") {
+        this.log.warn(
+          `rotascale: external_ref ${JSON.stringify(input.externalRef)} already ` +
+          `refers to a ${raw.status} trajectory (${raw.id}); recording is a ` +
+          `no-op for this block`);
+        trajectory.markClosed();
+      }
+      return trajectory;
     } catch (cause) {
       this.log.error("rotascale: could not open a trajectory — continuing "
         + "without capture", cause);
@@ -262,7 +284,19 @@ export class Rotascale {
  * Every method here is capture, so none of them throw.
  */
 export class Trajectory {
+  private closed = false;
+
   constructor(private readonly client: Rotascale, readonly id: string) {}
+
+  /** @internal Marked when the server returned an already-closed trajectory. */
+  markClosed(): void {
+    this.closed = true;
+  }
+
+  /** Is anything recorded through this handle actually being kept? */
+  get recording(): boolean {
+    return !this.closed;
+  }
 
   async step(input: {
     kind: string;
@@ -281,6 +315,7 @@ export class Trajectory {
     trustedSource?: boolean;
     discharges?: string[];
   }): Promise<void> {
+    if (this.closed) return;
     await this.client.capture(`/v1/trajectories/${this.id}/steps`, {
       kind: input.kind,
       payload: input.payload ?? {},
@@ -293,6 +328,8 @@ export class Trajectory {
 
   async close(input: { outcome?: Record<string, unknown>; status?: string } = {}):
     Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     await this.client.capture(`/v1/trajectories/${this.id}/close`, {
       outcome: input.outcome ?? {},
       status: input.status ?? "completed",

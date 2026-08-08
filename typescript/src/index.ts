@@ -19,3 +19,16 @@ export {
   EnforcementUnavailable,
   RequestRefused,
 } from "./errors.js";
+
+/**
+ * Middleware. Duck-typed, no provider library imported by any of them.
+ *
+ * subhadipmitra@: `openai-compat` rather than `openai`, deliberately. It wraps
+ * anything speaking that shape — Azure, Together, Groq, vLLM, Ollama — so an
+ * enterprise running its own models on its own hardware is the same code path
+ * rather than a special case. Rotascale governs the action, not the model.
+ */
+export { watchOpenAI } from "./middleware/openai-compat.js";
+export type { WatchOptions } from "./middleware/openai-compat.js";
+export { watchAnthropic } from "./middleware/anthropic.js";
+export { witness, currentTrajectory } from "./middleware/common.js";

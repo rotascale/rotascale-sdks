@@ -1,6 +1,6 @@
 {
   "name": "@rotascale/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Govern the action, not the model. TypeScript SDK for Rotascale agent governance.",
   "license": "Apache-2.0",
   "author": "Subhadip Mitra <dev@rotascale.com>",
