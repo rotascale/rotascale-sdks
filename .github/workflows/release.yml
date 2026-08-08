@@ -209,6 +209,16 @@ jobs:
       name: npm
       url: https://www.npmjs.com/package/@rotascale/sdk
     permissions:
+      # subhadipmitra@: BOTH. Declaring `permissions` REPLACES the default set
+      # rather than adding to it, so naming only `id-token` silently dropped
+      # `contents: read` — and `actions/checkout` then failed with "repository
+      # not found" against this private repo.
+      #
+      # The PyPI job above does not hit this because it downloads an artifact
+      # and never checks out. Nothing reached the registry; the job failed
+      # before `npm publish`, which is the fail-closed behaviour working, if
+      # for the wrong reason.
+      contents: read
       id-token: write        # the OIDC token IS the credential; nothing else
     defaults:
       run:
