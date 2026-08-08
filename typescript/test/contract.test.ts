@@ -28,36 +28,39 @@ import { Rotascale } from "../src/index.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Where the API's committed schema might be.
+ * The VENDORED fragment, which is always present.
  *
- * subhadipmitra@: An env var FIRST, because CI checks the console out
- * somewhere this file cannot guess — a relative walk out of the workspace does
- * not resolve on a runner. The sibling path is the local developer case.
+ * subhadipmitra@: Vendored rather than fetched, and the reason is that a
+ * cross-repo checkout of a private console needs a credential on a runner —
+ * so the alternative was a contract test that skips in CI, which reads as
+ * coverage and is not. That is the `#149` shape and it is not worth repeating
+ * for the sake of avoiding one committed file.
+ *
+ * The trade is staleness, and `test/contract.test.ts` closes it below: when
+ * the console IS checked out beside this repo the two are compared, so anybody
+ * with both finds out immediately.
  */
-const CANDIDATES = [
-  process.env.ROTASCALE_OPENAPI,
-  join(HERE, "..", "..", "..", "rotascale-console", "api", "openapi.json"),
-].filter(Boolean) as string[];
+const VENDORED = join(HERE, "..", "schema", "api.json");
 
-function schema(): Record<string, unknown> | null {
-  for (const path of CANDIDATES) {
-    try {
-      return JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      continue;
-    }
-  }
-  // Not found. Skipping is honest locally; CI sets ROTASCALE_OPENAPI and the
-  // test below fails if it is unset there, so a skip cannot hide in a build.
-  return null;
+/** The real thing, when this machine has it. */
+const UPSTREAM = process.env.ROTASCALE_OPENAPI
+  ?? join(HERE, "..", "..", "..", "rotascale-console", "api", "openapi.json");
+
+function schema(): Record<string, unknown> {
+  return JSON.parse(readFileSync(VENDORED, "utf8"));
 }
 
-function required(model: string): { props: Record<string, any>; required: string[] } | null {
-  const doc = schema();
-  if (!doc) return null;
-  const s = (doc as any).components?.schemas?.[model];
-  if (!s) return null;
-  return { props: s.properties ?? {}, required: s.required ?? [] };
+function upstream(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(UPSTREAM, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function required(model: string): { props: Record<string, any>; required: string[] } {
+  const s = (schema() as any).components.schemas[model];
+  return { props: s?.properties ?? {}, required: s?.required ?? [] };
 }
 
 /** Does this JSON value satisfy the OpenAPI type for that field? */
@@ -87,7 +90,6 @@ function ok(payload: unknown) {
 describe("the authorize body matches AuthorizeIn", () => {
   it("sends nothing the schema rejects", async () => {
     const spec = required("AuthorizeIn");
-    if (!spec) return; // console repo absent — see `schema()`.
 
     const fetchMock = ok({ outcome: "allow", allowed: true, reason: "ok" });
     const client = new Rotascale({ fetch: fetchMock, logger: { error() {}, warn() {} } });
@@ -117,7 +119,6 @@ describe("the authorize body matches AuthorizeIn", () => {
 
   it("names no field the schema has never heard of", async () => {
     const spec = required("AuthorizeIn");
-    if (!spec) return;
 
     const fetchMock = ok({ outcome: "allow", allowed: true, reason: "ok" });
     const client = new Rotascale({ fetch: fetchMock, logger: { error() {}, warn() {} } });
@@ -132,25 +133,29 @@ describe("the authorize body matches AuthorizeIn", () => {
   });
 });
 
-describe("the schema was actually available", () => {
-  it("is found in CI, so these checks are not silently skipped", () => {
-    // subhadipmitra@: A skipped contract test reads as coverage and is not.
-    // Locally the console may be absent and skipping is correct; in CI it is
-    // checked out on purpose, so an absent schema is a broken workflow rather
-    // than a missing convenience.
-    if (!process.env.CI) return;
-    expect(schema(), "ROTASCALE_OPENAPI is unset or unreadable in CI, so the "
-      + "contract checks did not run").not.toBeNull();
+describe("the vendored schema is current", () => {
+  it("matches the console's committed spec, when it is checked out here", () => {
+    // subhadipmitra@: The whole cost of vendoring, paid here. Anybody with
+    // both repos — which is anybody changing the API — finds out on the next
+    // `npm test` rather than when a customer's call starts 422-ing.
+    const real = upstream();
+    if (real === null) return;   // console absent; CI has the vendored copy.
+
+    const ours = (schema() as any).components.schemas;
+    const theirs = (real as any).components.schemas;
+
+    for (const model of Object.keys(ours)) {
+      expect(ours[model], `${model} has drifted — run \`npm run schema:sync\``)
+        .toEqual(theirs[model]);
+    }
   });
 });
 
-describe("the decision it reads matches DecisionOut", () => {
+describe("the decision it reads matches AuthorizeOut", () => {
   it("reads only fields the API declares", () => {
     const doc = schema();
-    if (!doc) return;
     const declared = new Set(Object.keys(
-      (doc as any).components?.schemas?.DecisionOut?.properties ?? {}));
-    if (declared.size === 0) return;
+      (doc as any).components?.schemas?.AuthorizeOut?.properties ?? {}));
 
     // Every wire name `Decision` maps. A rename server-side silently becomes
     // `null` in this client rather than an error, so it is checked here.
@@ -160,7 +165,7 @@ describe("the decision it reads matches DecisionOut", () => {
       "policy_outcome", "enforcement_mode", "capability",
       "capability_expires_at",
     ]) {
-      expect(declared, `DecisionOut has no ${field}`).toContain(field);
+      expect(declared, `AuthorizeOut has no ${field}`).toContain(field);
     }
   });
 });
