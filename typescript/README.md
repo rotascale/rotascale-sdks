@@ -52,6 +52,34 @@ Read `enforcing` rather than comparing `enforcementMode` to a string: the set of
 modes will grow, and `mode === "enforce"` silently treats a new non-enforcing
 rung as enforcement.
 
+## Your own models, on your own hardware
+
+Rotascale governs **the action**, not the model — so which model produced the
+request is not something it needs to know, and nothing here talks to a model
+provider.
+
+The Python middleware is deliberately named `openai_compat` rather than
+`openai`, and imports no provider library: it duck-types anything exposing
+`chat.completions.create`. That covers Ollama, vLLM, LM Studio, LiteLLM, Azure
+OpenAI, Together, Groq — every service that copied the shape.
+
+This is not aspirational. The Rotascale demo runs entirely on a self-hosted
+`llama3.2:3b` served by Ollama at `http://ollama:11434/v1`; every governed
+decision it shows was made about an agent talking to a local model. No request
+leaves the deployment.
+
+For an on-prem installation the same holds for the control plane: the API,
+Postgres, Keycloak and the Cedar services all run in your own environment, and
+`baseUrl` points at them.
+
+```ts
+const rotascale = new Rotascale({ baseUrl: "https://rotascale.internal" });
+```
+
+The TypeScript middleware is not built yet — see the repository README for what
+exists in Python today. When it lands it will follow the same rule: duck-typed,
+no provider import, `openai-compat` rather than `openai`.
+
 ## Refusals
 
 The exception type tells you the remedy.

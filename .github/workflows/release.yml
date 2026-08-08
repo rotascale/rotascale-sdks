@@ -28,6 +28,7 @@ on:
     tags:
       - "python-v*"
       - "mcp-v*"
+      - "typescript-v*"
   workflow_dispatch:
     inputs:
       package:
@@ -43,6 +44,14 @@ concurrency:
 jobs:
   verify:
     name: Build and verify
+    # subhadipmitra@: The Python path only. A `typescript-v*` tag reaches the
+    # npm jobs below, and without this guard this job would try to resolve a
+    # PyPI package from it and fail the release with an error about the wrong
+    # thing.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/python-v') ||
+      startsWith(github.ref, 'refs/tags/mcp-v')
     runs-on: ubuntu-latest
     outputs:
       directory: ${{ steps.target.outputs.directory }}
@@ -168,3 +177,82 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # --- npm ---------------------------------------------------------------
+  #
+  # subhadipmitra@: TRUSTED PUBLISHING, the same as PyPI above and for the same
+  # reason. Two releases once went out from a laptop and one landed on the
+  # wrong account because the token was chosen from a config section name
+  # rather than a verified identity. The identity here comes from this
+  # repository over OIDC, so there is no long-lived npm token to leak, to
+  # mislabel, or to reach for by mistake.
+  #
+  # ONE-TIME SETUP on npmjs.com, under the package's Settings -> Publishing:
+  #   organisation: rotascale
+  #   repository:   rotascale-sdks
+  #   workflow:     release.yml
+  #   environment:  npm
+  # Until that exists this step fails closed with an auth error, which is the
+  # correct behaviour: no trust configuration means no accidental upload.
+  #
+  # NOTE ON THE VERSION. `@rotascale/sdk@0.1.0` is already on npm — the
+  # archived "Trust Intelligence Platform" SDK, published 2026-02-07, a
+  # different product with a different API. This package starts at 0.2.0 and
+  # 0.1.0 should be deprecated with a pointer rather than unpublished, so
+  # anybody who installed it learns why it changed.
+  npm:
+    name: Publish to npm
+    needs: verify-npm
+    if: startsWith(github.ref, 'refs/tags/typescript-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@rotascale/sdk
+    permissions:
+      id-token: write        # the OIDC token IS the credential; nothing else
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1+; the bundled version lags.
+      - run: npm install -g npm@latest
+      - run: npm ci || npm install
+      - run: npm run build
+      - run: npm publish
+
+  verify-npm:
+    name: Build and verify (TypeScript)
+    if: startsWith(github.ref, 'refs/tags/typescript-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+      # subhadipmitra@: The tag must match the package. A `typescript-v0.2.0`
+      # tag that publishes 0.3.0 is how a release note ends up describing code
+      # nobody shipped.
+      - name: The tag and package.json agree
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#typescript-v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag says $tag, package.json says $pkg" >&2
+            exit 1
+          fi
+          echo "publishing @rotascale/sdk@$pkg"

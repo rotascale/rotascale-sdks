@@ -1,7 +1,7 @@
 {
   "name": "@rotascale/sdk",
-  "version": "0.1.0",
-  "description": "Govern the action, not the model. TypeScript SDK for Rotascale.",
+  "version": "0.2.0",
+  "description": "Govern the action, not the model. TypeScript SDK for Rotascale agent governance.",
   "license": "Apache-2.0",
   "author": "Subhadip Mitra <dev@rotascale.com>",
   "type": "module",
@@ -31,5 +31,28 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rotascale/rotascale-sdks.git",
+    "directory": "typescript"
+  },
+  "homepage": "https://github.com/rotascale/rotascale-sdks/tree/main/typescript",
+  "bugs": {
+    "url": "https://github.com/rotascale/rotascale-sdks/issues"
+  },
+  "keywords": [
+    "agent",
+    "governance",
+    "ai-governance",
+    "eu-ai-act",
+    "authorization",
+    "audit",
+    "llm",
+    "observability"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
