@@ -10,6 +10,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  typescript:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # subhadipmitra@: The CONSOLE's schema, which the contract test needs.
+      #
+      # `test/contract.test.ts` validates the request body against the API's
+      # committed `openapi.json` and skips when it is absent. That skip is
+      # honest locally and would be a lie here: without it, the one test that
+      # catches a body the API would reject never runs — the `#149` shape,
+      # coverage that looks like coverage.
+      #
+      # Not `continue-on-error`. If the schema cannot be fetched this job
+      # fails, rather than passing over a check it did not make.
+      - uses: actions/checkout@v5
+        with:
+          repository: rotascale/rotascale-console
+          path: console-schema
+          token: ${{ secrets.CONSOLE_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run test
+        env:
+          ROTASCALE_OPENAPI: ${{ github.workspace }}/console-schema/api/openapi.json
+      - run: npm run build
+
   python:
     name: Python SDK
     runs-on: ubuntu-latest

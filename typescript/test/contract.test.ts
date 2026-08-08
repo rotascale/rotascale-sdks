@@ -26,16 +26,30 @@ import { Rotascale } from "../src/index.js";
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const OPENAPI = join(HERE, "..", "..", "..", "rotascale-console", "api", "openapi.json");
+
+/**
+ * Where the API's committed schema might be.
+ *
+ * subhadipmitra@: An env var FIRST, because CI checks the console out
+ * somewhere this file cannot guess — a relative walk out of the workspace does
+ * not resolve on a runner. The sibling path is the local developer case.
+ */
+const CANDIDATES = [
+  process.env.ROTASCALE_OPENAPI,
+  join(HERE, "..", "..", "..", "rotascale-console", "api", "openapi.json"),
+].filter(Boolean) as string[];
 
 function schema(): Record<string, unknown> | null {
-  try {
-    return JSON.parse(readFileSync(OPENAPI, "utf8"));
-  } catch {
-    // The console repo is not always checked out beside this one. Skipping is
-    // honest; pretending to have validated is not.
-    return null;
+  for (const path of CANDIDATES) {
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
   }
+  // Not found. Skipping is honest locally; CI sets ROTASCALE_OPENAPI and the
+  // test below fails if it is unset there, so a skip cannot hide in a build.
+  return null;
 }
 
 function required(model: string): { props: Record<string, any>; required: string[] } | null {
@@ -115,6 +129,18 @@ describe("the authorize body matches AuthorizeIn", () => {
     const unknown = Object.keys(bodyOf(fetchMock))
       .filter((f) => !(f in spec.props));
     expect(unknown, `fields the API does not declare: ${unknown}`).toEqual([]);
+  });
+});
+
+describe("the schema was actually available", () => {
+  it("is found in CI, so these checks are not silently skipped", () => {
+    // subhadipmitra@: A skipped contract test reads as coverage and is not.
+    // Locally the console may be absent and skipping is correct; in CI it is
+    // checked out on purpose, so an absent schema is a broken workflow rather
+    // than a missing convenience.
+    if (!process.env.CI) return;
+    expect(schema(), "ROTASCALE_OPENAPI is unset or unreadable in CI, so the "
+      + "contract checks did not run").not.toBeNull();
   });
 });
 
