@@ -1,0 +1,16 @@
+{
+  "name": "rotascale",
+  "version": "0.0.1",
+  "description": "Rotascale agent governance — install @rotascale/sdk",
+  "license": "Apache-2.0",
+  "author": "Subhadip Mitra <dev@rotascale.com>",
+  "homepage": "https://rotascale.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rotascale/rotascale-sdks.git",
+    "directory": "npm-name"
+  },
+  "keywords": ["rotascale", "agent-governance"],
+  "files": ["README.md"],
+  "publishConfig": { "access": "public" }
+}
