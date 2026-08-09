@@ -9,6 +9,8 @@ the customer's agent. A proxy that hangs because Rotascale is slow has caused
 the outage it was sold to prevent.
 """
 
+import json
+
 import httpx
 import pytest
 from rotascale import Agent, Rotascale
@@ -228,3 +230,160 @@ def test_no_refusal_reads_as_permission(outcome):
     text = _blocked(1, outcome, "r")["result"]["content"][0]["text"]
     assert "BLOCKED" in text
     assert text.lower().count("proceed.") <= 1 or "do not proceed" in text.lower()
+
+
+# --- money budgets are actually enforced (`#152`) ---------------------------
+
+PRICED_GRANT = [{
+    "id": "grt_money", "scope": {"tools": ["issue_refund", "read_customer"]},
+    "status": "active", "enforcement_mode": "enforce",
+    "budget_amount_minor": 1_000_000, "budget_currency": "USD",
+}]
+
+
+class TestAmountsReachTheAuthorityGate:
+    """The proxy authorized every call at 0, so a money budget was never spent.
+
+    subhadipmitra@: Found against the live deployment, not here. A grant with a
+    1,000,000 budget was exhausted by two direct calls, and then a 250,000
+    refund went straight through the proxy — recorded as `allow / authorised`
+    with `amount_minor: 0`, which reads as "the budget was checked and there was
+    room".
+
+    The cause was a good decision with a bad consequence: the proxy sends
+    argument NAMES and never values, so the amount was excluded along with
+    everything else. Naming the field sends that one value and nothing more.
+    """
+
+    async def test_the_declared_amount_is_sent_to_authorize(self, monkeypatch):
+        monkeypatch.setenv("ROTASCALE_MCP_AMOUNT_FIELDS",
+                           "issue_refund:amount_minor")
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/authorize":
+                seen.update(json.loads(request.content))
+                return httpx.Response(200, json={
+                    "outcome": "allow", "allowed": True, "reason": "ok",
+                    "findings": [], "enforcement_mode": "enforce"})
+            return responder(grants=PRICED_GRANT)(request)
+
+        g = Governor(make_client(handler), AGENT, server_name="payments")
+        await g.start(ref=None)
+        reply = await g.decide(1, "issue_refund", {"amount_minor": 250_000})
+
+        assert reply is None, "an allowed call must be forwarded"
+        assert seen.get("amount_minor") == 250_000, (
+            f"the proxy authorized for {seen.get('amount_minor')!r}, so the "
+            f"budget can never be exhausted — this is #152")
+
+    async def test_a_priced_grant_with_no_declared_field_is_refused(self):
+        """Fail closed. Authorizing at 0 is what let money through."""
+        g = Governor(make_client(responder(grants=PRICED_GRANT)),
+                     AGENT, server_name="payments")
+        await g.start(ref=None)
+        reply = await g.decide(1, "issue_refund", {"amount_minor": 250_000})
+
+        assert reply is not None, "an unenforceable money call must not pass"
+        text = json.dumps(reply)
+        assert "spending budget" in text
+        # The message has to name the fix, or an operator is stuck.
+        assert "ROTASCALE_MCP_AMOUNT_FIELDS" in text
+
+    async def test_a_declared_field_missing_from_the_call_is_refused(self, monkeypatch):
+        """Declared-but-absent is a problem, not a free action."""
+        monkeypatch.setenv("ROTASCALE_MCP_AMOUNT_FIELDS",
+                           "issue_refund:amount_minor")
+        g = Governor(make_client(responder(grants=PRICED_GRANT)),
+                     AGENT, server_name="payments")
+        await g.start(ref=None)
+        reply = await g.decide(1, "issue_refund", {"note": "no amount here"})
+        assert reply is not None
+        assert "cannot tell how much" in json.dumps(reply)
+
+    async def test_an_agent_with_no_money_is_completely_unaffected(self):
+        """The question this design turns on.
+
+        subhadipmitra@: Most tools carry no amount — `send_email`, `read_file`,
+        `post_message`. The trigger is the GRANT, not the tool: only one with a
+        spending budget needs an amount, so an agent governed by scope and count
+        budgets never meets any of this and needs no configuration.
+        """
+        g = await governor(grants=GRANT)          # scope only, no budget
+        assert await g.decide(1, "send_email", {"to": "a@b.c"}) is None
+
+    async def test_an_unpriced_tool_under_a_priced_grant_still_works(self, monkeypatch):
+        """A grant can cover both a money tool and a harmless one.
+
+        Refusing `read_customer` because a sibling tool moves money would make
+        the control an outage.
+        """
+        monkeypatch.setenv("ROTASCALE_MCP_AMOUNT_FIELDS",
+                           "issue_refund:amount_minor")
+        g = Governor(make_client(responder(grants=PRICED_GRANT)),
+                     AGENT, server_name="payments")
+        await g.start(ref=None)
+        assert await g.decide(1, "read_customer", {"id": "cus_1"}) is None
+
+    async def test_the_source_is_recorded_so_zero_is_not_ambiguous(self, monkeypatch):
+        """`amount_minor: 0` alone cannot distinguish "this action is free" from
+        "nobody looked"."""
+        monkeypatch.setenv("ROTASCALE_MCP_AMOUNT_FIELDS", "")
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/authorize":
+                seen.update(json.loads(request.content))
+                return httpx.Response(200, json={
+                    "outcome": "allow", "allowed": True, "reason": "ok",
+                    "findings": [], "enforcement_mode": "enforce"})
+            return responder(grants=GRANT)(request)
+
+        g = Governor(make_client(handler), AGENT, server_name="mailer")
+        await g.start(ref=None)
+        await g.decide(1, "send_email", {"to": "a@b.c"})
+        assert seen["action"]["mcp_amount_source"] == "unpriced"
+
+    async def test_a_true_flag_is_not_read_as_an_amount(self, monkeypatch):
+        """`True` is an int in Python and would authorize for 1."""
+        monkeypatch.setenv("ROTASCALE_MCP_AMOUNT_FIELDS", "issue_refund:urgent")
+        from rotascale_mcp.proxy import UNRESOLVED, amount_for
+
+        assert amount_for("issue_refund", {"urgent": True}) == (0, UNRESOLVED)
+
+    def test_startup_names_what_it_cannot_enforce(self):
+        """An operator should learn this at start, not from a ledger later."""
+        g = Governor(make_client(responder()), AGENT, server_name="payments")
+        g._grants = PRICED_GRANT
+        assert ("grt_money", "issue_refund") in g.unenforceable()
+
+
+async def test_a_proxy_refusal_is_recorded_as_a_refusal_not_an_allow():
+    """The evidence must agree with what happened.
+
+    subhadipmitra@: Caught by reading the ledger after the live run, not by a
+    test. Authorizing against the real grant returned `allow` — the gate sees a
+    zero-amount action and there is room — and then the proxy blocked the call.
+    The ledger said `allow` for a call that never reached the tool, so a
+    deployment enforcing hard at the proxy looked, in its own evidence, like one
+    that permitted the spend.
+    """
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/authorize":
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={
+                "outcome": "deny", "allowed": False, "reason": "no authority",
+                "findings": [], "enforcement_mode": "enforce"})
+        return responder(grants=PRICED_GRANT)(request)
+
+    g = Governor(make_client(handler), AGENT, server_name="payments")
+    await g.start(ref=None)
+    await g.decide(1, "issue_refund", {"amount_minor": 250_000})
+
+    assert seen, "the refusal was never recorded at all"
+    assert seen[-1]["grant_id"] is None, (
+        "recorded against the real grant, so the ledger will read `allow` for a "
+        "call the proxy blocked")
+    assert "proxy" in seen[-1]["action"]["mcp_refused_by"]

@@ -20,6 +20,43 @@ evidence, and a real gate for an agent that cooperates — but an agent that nev
 calls `authorize_action` is not governed by it. We would rather say that plainly
 than let you find out during an incident.
 
+### Two settings decide how much the proxy enforces
+
+Out of the box the proxy **records** a tool call no grant covers and forwards
+it. That keeps an unconfigured install working rather than breaking it, and the
+call is visible in the console as ungoverned — but it is observation, not
+enforcement. To refuse instead:
+
+```
+ROTASCALE_MCP_REQUIRE_GRANT=1
+```
+
+If a grant carries a **spending budget**, the proxy has to know how much a call
+would spend, and it will not read your tool arguments to guess. Name the field:
+
+```
+ROTASCALE_MCP_AMOUNT_FIELDS=issue_refund:amount_minor,transfer_funds:value
+ROTASCALE_MCP_AMOUNT_FIELD=amount_minor      # fallback for any other tool
+```
+
+Only that one argument is sent. Everything else stays argument *names* and never
+values, as before.
+
+**Most agents need none of this.** A tool with no money in it — `send_email`,
+`read_file` — is governed by scope and count budgets, which never needed an
+amount. The trigger is the grant, not the tool.
+
+If a grant *does* carry a spending budget and you have declared nothing, the
+proxy **refuses** calls under it and says which variable to set. It used to
+authorize them at zero, which meant the budget could never be exhausted and an
+agent could move any sum one call at a time — with the ledger recording
+`allow / authorised` throughout. Failing closed and loudly is the correct
+behaviour for an enforcement point; see `#152`.
+
+Once you have named even one money tool on a grant, silence about the others is
+taken as a statement that they carry no money, so a harmless sibling tool under
+the same grant keeps working.
+
 ## Rotascale as an MCP server
 
 Adds governance tools to any MCP host. The agent chooses when to call them.

@@ -686,14 +686,14 @@ wheels = [
 
 [[package]]
 name = "rotascale"
-version = "0.3.1"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/88/5a67f03a01a719942528316d57f83c5569c39cb548bc17a0ab2caa3cd4ac/rotascale-0.3.1.tar.gz", hash = "sha256:1e4d99338a138e52b398f8f26c085934a1de4dd82c3a8e8813ea15d4ae985c1a", size = 103529, upload-time = "2026-08-02T21:37:24.825Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8f/fc/797197ab6b03635a250233060cc880c1ead99819989481930c5fce285011/rotascale-0.3.2.tar.gz", hash = "sha256:15120b45d1b719625937d79761aa26cf360cdd3507974f3c44a9d8de6af51b95", size = 104430, upload-time = "2026-08-03T18:22:29.932Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/ba/308c7d78a2ba8a82a41692fc8d91af635e9b84cfe9d62a000e77c976f8f7/rotascale-0.3.1-py3-none-any.whl", hash = "sha256:2cb6a0923cca7631b32723b9a8d17eb828f86713ebd2aa5317753a0b0b5294a5", size = 60035, upload-time = "2026-08-02T21:37:23.589Z" },
+    { url = "https://files.pythonhosted.org/packages/82/7e/fef21aa24dd0271dd4a48824a5f56649edb160833ec9af2f598a74e3ea2e/rotascale-0.3.2-py3-none-any.whl", hash = "sha256:70b96aeac2a99d3e9a89bdfd2beb27d9f3752cc1b922ebb42464c613521659bd", size = 60034, upload-time = "2026-08-03T18:22:28.518Z" },
 ]
 
 [package.optional-dependencies]
@@ -704,7 +704,7 @@ capability = [
 
 [[package]]
 name = "rotascale-mcp"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -728,7 +728,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.2" },
-    { name = "rotascale", specifier = ">=0.2.0" },
+    { name = "rotascale", specifier = ">=0.3.2" },
     { name = "rotascale", extras = ["capability"], marker = "extra == 'guard'", specifier = ">=0.3.1" },
 ]
 provides-extras = ["guard"]

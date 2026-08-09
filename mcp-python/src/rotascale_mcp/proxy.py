@@ -43,6 +43,82 @@ logger = logging.getLogger("rotascale_mcp.proxy")
 REQUIRE_GRANT = os.environ.get("ROTASCALE_MCP_REQUIRE_GRANT", "").lower() in (
     "1", "true", "yes")
 
+#: Which tool argument carries the money, per tool (`#152`).
+#:
+#:     ROTASCALE_MCP_AMOUNT_FIELDS="issue_refund:amount_minor,transfer:value"
+#:     ROTASCALE_MCP_AMOUNT_FIELD=amount_minor      # applies to any other tool
+#:
+#: subhadipmitra@: This exists because the proxy authorized EVERY call with
+#: `amount_minor=0`, so an amount budget could never be exhausted by traffic
+#: through it. An agent behind the proxy could move any sum against a spent
+#: budget, one call at a time, and every call recorded `allow / authorised` —
+#: evidence that reads as "the budget was checked and there was room".
+#:
+#: It was not sloppiness. The proxy deliberately sends argument NAMES and never
+#: values, so the amount was excluded along with everything else. That decision
+#: is kept: naming the field here sends that ONE value and nothing more.
+#:
+#: Most agents need none of this. A tool with no money in it — `send_email`,
+#: `read_file` — is governed by scope and count budgets, which never needed an
+#: amount. The trigger is the GRANT: only one carrying `budget_amount_minor`
+#: requires an amount, and only then does an undeclared tool become a problem.
+def _amount_fields() -> dict[str, str]:
+    fields = {}
+    for pair in os.environ.get("ROTASCALE_MCP_AMOUNT_FIELDS", "").split(","):
+        tool, _, field = pair.partition(":")
+        if tool.strip() and field.strip():
+            fields[tool.strip()] = field.strip()
+    return fields
+
+
+#: A tool nobody declared as carrying money. Authorized at 0, honestly, because
+#: the operator states which of their tools move money.
+UNPRICED = "unpriced"
+#: A field WAS declared and the call did not carry a usable number. Refused —
+#: declared-but-absent is a real problem, not a free action.
+UNRESOLVED = "unresolved"
+
+
+def amount_for(tool: str, arguments: dict[str, Any]) -> tuple[int, str]:
+    """`(amount_minor, source)`. See UNPRICED / UNRESOLVED."""
+    field = _amount_fields().get(tool) or os.environ.get(
+        "ROTASCALE_MCP_AMOUNT_FIELD", "").strip()
+    if not field:
+        return 0, UNPRICED
+    raw = arguments.get(field)
+    if isinstance(raw, bool) or raw is None:
+        # bool first: `True` is an int in Python and would authorize for 1.
+        return 0, UNRESOLVED
+    try:
+        return int(raw), field
+    except (TypeError, ValueError):
+        return 0, UNRESOLVED
+
+
+def priced(grant: dict) -> bool:
+    """Does this grant carry a budget an amount could exhaust?"""
+    return bool(grant.get("budget_amount_minor"))
+
+
+def configured_for(grant: dict) -> bool:
+    """Has the operator said which of this grant's tools carry money?
+
+    subhadipmitra@: The distinction that keeps this from becoming an outage.
+
+    An undeclared tool means one of two very different things. If the operator
+    has declared nothing at all for this grant, we cannot tell a free action
+    from an unpriced one, and the safe reading is that the budget is
+    unenforceable — the `#152` case. But once they have named even one money
+    tool, silence about the others is a STATEMENT: `read_customer` carries no
+    money. Refusing it then would break a working agent to protect a budget it
+    was never going to spend.
+    """
+    if os.environ.get("ROTASCALE_MCP_AMOUNT_FIELD", "").strip():
+        return True
+    declared = _amount_fields()
+    return any(tool in declared
+               for tool in (grant.get("scope") or {}).get("tools") or [])
+
 
 def _blocked(message_id: Any, outcome: str, reason: str) -> dict:
     """The reply an agent gets instead of its tool result.
@@ -91,12 +167,43 @@ class Governor:
         response = await asyncio.to_thread(
             self.client.http.get, f"/v1/agents/{self.agent.id}/grants")
         self._grants = response.json() if response.status_code == 200 else []
+        for grant_id, tool in self.unenforceable():
+            logger.warning(
+                "rotascale: grant %s has a spending budget but '%s' declares no "
+                "amount field, so calls to it will be REFUSED. Set "
+                "ROTASCALE_MCP_AMOUNT_FIELDS=%s:<argument>.",
+                grant_id, tool, tool)
         if not self._grants:
             logger.warning(
                 "rotascale: %s holds no authority. Tool calls will be recorded "
                 "and %s.", self.agent.slug,
                 "REFUSED" if REQUIRE_GRANT else "forwarded",
             )
+
+    def grant_object_for(self, tool: str) -> dict | None:
+        for grant in self._grants:
+            if tool in ((grant.get("scope") or {}).get("tools") or []):
+                return grant
+        return None
+
+    def unenforceable(self) -> list[tuple[str, str]]:
+        """(grant_id, tool) pairs whose money budget cannot be enforced here.
+
+        subhadipmitra@: A grant with an amount budget whose tools carry no
+        declared amount field. The proxy would authorize each call at 0, so the
+        budget could never be exhausted — which is exactly the defect `#152`
+        found in production, and the reason this is surfaced at startup rather
+        than discovered from a ledger afterwards.
+        """
+        out = []
+        for grant in self._grants:
+            if not priced(grant):
+                continue
+            if configured_for(grant):
+                continue          # the operator has named their money tools
+            for tool in (grant.get("scope") or {}).get("tools") or []:
+                out.append((grant["id"], tool))
+        return out
 
     def grant_for(self, tool: str) -> str | None:
         """The first grant whose scope names this tool.
@@ -184,12 +291,66 @@ class Governor:
                     f"deployment requires one.")
             return None
 
+        grant = self.grant_object_for(tool) or {}
+        amount, source = amount_for(tool, arguments)
+
+        # subhadipmitra@: Fail CLOSED, and only here. If this grant carries a
+        # money budget and the amount cannot be determined, authorizing at 0
+        # would let any sum through against a spent budget — the `#152` defect.
+        # Refusing is the enforcement rule the rest of the platform follows, and
+        # the message names the one setting that fixes it.
+        #
+        # Deliberately narrow: it fires only when the grant is priced AND the
+        # amount is unknown. A grant with only scope or a count budget never
+        # reaches this, which is most agents.
+        unenforceable = priced(grant) and (
+            source == UNRESOLVED                      # declared, but absent
+            or (source == UNPRICED and not configured_for(grant))
+        )
+        if unenforceable:
+            # subhadipmitra@: `grant_id=None`, so the platform RECORDS A
+            # REFUSAL rather than an allow.
+            #
+            # Authorizing against the real grant here returned `allow` — the
+            # gate sees a zero-amount action and there is room for it — and then
+            # the proxy blocked the call anyway. The ledger then said `allow`
+            # for a call that never happened, so a deployment enforcing at the
+            # proxy looked, in its own evidence, like one that permitted the
+            # spend. That is the same shape as the defect this whole change
+            # exists to fix, one level up.
+            #
+            # Passing no grant is the honest claim: nothing authorised this
+            # action, because the proxy could not establish what was being
+            # asked for. `#128` made the same call for the REQUIRE_GRANT path.
+            await asyncio.to_thread(
+                self.client.authorize, None, {"tools": [tool]},
+                trajectory_id=self.trajectory.id, raise_on_refusal=False,
+                mcp_server=self.server_name,
+                mcp_arguments=sorted(arguments)[:20],
+                mcp_amount_source=source,
+                mcp_refused_by="proxy: spending budget with no amount declared",
+            )
+            hint = ("no argument named by ROTASCALE_MCP_AMOUNT_FIELDS was "
+                    "found on this call"
+                    if source == UNRESOLVED else
+                    f"set ROTASCALE_MCP_AMOUNT_FIELDS={tool}:<argument> so the "
+                    f"amount can be checked against the budget")
+            return _blocked(
+                message_id, "deny",
+                f"authority for '{tool}' carries a spending budget, and this "
+                f"proxy cannot tell how much this call would spend — {hint}")
+
         decision = await asyncio.to_thread(
             self.client.authorize, grant_id, {"tools": [tool]},
             trajectory_id=self.trajectory.id,
             raise_on_refusal=False,
+            amount_minor=amount,
+            currency=grant.get("budget_currency") or None,
             mcp_server=self.server_name,
             mcp_arguments=sorted(arguments)[:20],   # names only, never values
+            # Recorded so a reader can tell "authorised for nothing" from
+            # "authorised for the amount asked". Without it both look like 0.
+            mcp_amount_source=source,
         )
         if decision.allowed:
             return None
