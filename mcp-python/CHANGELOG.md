@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.2 — 2026-08-09
+
+**The proxy now enforces spending budgets.** It authorized every call with
+`amount_minor=0`, so a money budget could never be exhausted by traffic through
+it — an agent behind the proxy could move any sum against a spent budget, one
+call at a time, and every call recorded `allow / authorised`. Evidence that
+reads as *the budget was checked and there was room*.
+
+Name the argument that carries money and it is checked against the budget:
+
+```
+ROTASCALE_MCP_AMOUNT_FIELDS=issue_refund:amount_minor,transfer_funds:value
+ROTASCALE_MCP_AMOUNT_FIELD=amount_minor      # fallback for any other tool
+```
+
+Only that one value is sent. Argument names, and nothing else, as before.
+
+**Most agents are unaffected and need no configuration.** The trigger is the
+grant, not the tool: only one carrying a spending budget needs an amount, so an
+agent governed by scope or a count budget never meets any of this.
+
+Where a grant *is* priced and the amount cannot be determined, the call is now
+refused rather than authorized at zero, and the message names the variable to
+set. Narrowly: once even one money tool is declared on a grant, silence about
+the others is taken as a statement that they carry no money, so a harmless
+sibling tool under the same grant keeps working.
+
+A proxy refusal is also now recorded as a **refusal**. It authorized against the
+real grant — which returns `allow`, because the gate saw a zero-amount action —
+and then blocked the call, so a deployment enforcing hard at the proxy looked,
+in its own evidence, like one that permitted the spend.
+
+`ROTASCALE_MCP_REQUIRE_GRANT` is documented for the first time. Without it the
+proxy records and forwards a call no grant covers, which is observation rather
+than enforcement, and the README did not say so.
+
 ## 0.1.1 — 2026-08-04
 
 A tool call refused because **no grant covers it** is now recorded as a
