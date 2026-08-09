@@ -32,3 +32,4 @@ export { watchOpenAI } from "./middleware/openai-compat.js";
 export type { WatchOptions } from "./middleware/openai-compat.js";
 export { watchAnthropic } from "./middleware/anthropic.js";
 export { witness, currentTrajectory } from "./middleware/common.js";
+export { watchMcp, manifestDigest } from "./middleware/mcp.js";

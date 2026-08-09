@@ -95,6 +95,34 @@ without knowing which provider served which call.
 Content capture is **off** by default and truncated when on. Tool **names** are
 recorded; their arguments are not.
 
+## MCP
+
+```ts
+import { watchMcp } from "@rotascale/sdk";
+
+const session = watchMcp(rawSession, { server: "payments" });
+await session.listTools();
+await session.callTool({ name: "issue_refund", arguments: { amount_minor: 500 } });
+```
+
+Duck-typed like the others — it imports no MCP SDK and wraps anything exposing
+`listTools` / `callTool`.
+
+**The manifest digest is the point.** A tool's *description* is an instruction
+to a model, so a compromised MCP server can rewrite one mid-session: the agent
+re-reads the tool list, the description says something new, and the model
+follows it. Nothing in the transcript looks wrong, because the attack lives in
+metadata nobody records.
+
+A description or schema change between two `listTools()` calls raises a finding
+**and taints the context**, so a grant requiring a clean context refuses the
+next action rather than logging it after the fact. The description itself is
+never sent — recording it would move the payload into your evidence store
+rather than detect it.
+
+The digest is byte-identical to the Python SDK's, so a fleet running both
+against the same server does not report drift on every handover.
+
 ## Refusals
 
 The exception type tells you the remedy.

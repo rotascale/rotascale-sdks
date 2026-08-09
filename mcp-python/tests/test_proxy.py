@@ -10,6 +10,7 @@ the outage it was sold to prevent.
 """
 
 import json
+import os
 
 import httpx
 import pytest
@@ -387,3 +388,46 @@ async def test_a_proxy_refusal_is_recorded_as_a_refusal_not_an_allow():
         "recorded against the real grant, so the ledger will read `allow` for a "
         "call the proxy blocked")
     assert "proxy" in seen[-1]["action"]["mcp_refused_by"]
+
+
+class TestTheDependencyIsNamedUsefully:
+    """A register is only as good as the identity of the things in it (`#151`).
+
+    subhadipmitra@: `server_name` was `command[0]`, so wrapping
+    `npx -y @acme/pay-mcp` registered a dependency called `npx` — and every Node
+    MCP server in an estate collapsed into that one entry. Under DORA these are
+    ICT third-party dependencies that Article 28 requires a register of, and a
+    register listing `npx` is not one.
+    """
+
+    def test_an_npm_package_is_named_not_its_runner(self):
+        from rotascale_mcp.proxy import server_name_for
+
+        assert server_name_for(["npx", "-y", "@acme/pay-mcp"]) == "@acme/pay-mcp"
+
+    def test_a_python_module_server_is_named(self):
+        from rotascale_mcp.proxy import server_name_for
+
+        assert server_name_for(["python", "-m", "acme_mcp"]) == "acme_mcp"
+
+    def test_a_direct_binary_is_its_own_name_without_the_path(self):
+        from rotascale_mcp.proxy import server_name_for
+
+        assert server_name_for(["/usr/local/bin/pay-mcp"]) == "pay-mcp"
+
+    def test_an_interpreter_with_a_script_names_the_script(self):
+        """The case that produced `/tmp/mcpv/bin/python` in a live run."""
+        from rotascale_mcp.proxy import server_name_for
+
+        assert server_name_for(
+            ["/tmp/venv/bin/python", "/srv/fake_mcp_server.py"]
+        ) == "fake_mcp_server.py"
+
+    def test_an_operator_name_still_wins(self, monkeypatch):
+        monkeypatch.setenv("ROTASCALE_MCP_SERVER_NAME", "acme-payments-prod")
+        assert os.environ["ROTASCALE_MCP_SERVER_NAME"] == "acme-payments-prod"
+
+    def test_an_empty_command_does_not_crash(self):
+        from rotascale_mcp.proxy import server_name_for
+
+        assert server_name_for([]) == "unknown"

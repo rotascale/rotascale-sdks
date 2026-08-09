@@ -357,6 +357,48 @@ class Governor:
         return _blocked(message_id, decision.outcome, decision.reason)
 
 
+#: Commands that launch somebody else's server rather than being one.
+#: `npx -y @acme/pay-mcp` is a dependency on `@acme/pay-mcp`, not on npx.
+_RUNNERS = {"npx", "node", "bunx", "deno", "python", "python3", "uv", "uvx",
+            "pipx", "bun", "sh", "bash", "docker"}
+
+
+def server_name_for(command: list[str]) -> str:
+    """A name that identifies the DEPENDENCY, not the interpreter.
+
+    subhadipmitra@: This used to be `command[0]`, so a proxy wrapping
+    `npx -y @acme/pay-mcp` registered the dependency as `npx` — and every Node
+    MCP server in the estate collapsed into one entry with that name.
+
+    It matters more than it looks. Under DORA an MCP server is an ICT
+    third-party dependency and Article 28 requires a register of them (`#151`).
+    A register listing `npx` as a third-party dependency is not a register; the
+    artefact is only as good as the identity of the things in it.
+
+    `ROTASCALE_MCP_SERVER_NAME` still overrides. Nothing here beats an operator
+    naming their own dependency.
+    """
+    if not command:
+        return "unknown"
+
+    head = os.path.basename(command[0])
+    if head not in _RUNNERS:
+        return head                      # it IS the server
+
+    for argument in command[1:]:
+        if argument.startswith("-"):
+            continue                     # a flag, not the package
+        if argument in ("-m", "run", "exec"):
+            continue
+        # An npm scoped package survives whole — the `@scope/` IS the
+        # identity, and basename would strip the scope and merge two vendors'
+        # servers of the same name. Everything else is a path.
+        if argument.startswith("@"):
+            return argument
+        return os.path.basename(argument)
+    return head
+
+
 def _parse(line: bytes) -> dict | None:
     try:
         message = json.loads(line)
@@ -378,7 +420,7 @@ async def run(agent_slug: str, command: list[str], *, ref: str | None = None) ->
     )
     agent = await asyncio.to_thread(client.agent, agent_slug)
     governor = Governor(client, agent, server_name=os.environ.get(
-        "ROTASCALE_MCP_SERVER_NAME", command[0]))
+        "ROTASCALE_MCP_SERVER_NAME") or server_name_for(command))
 
     try:
         await governor.start(ref)
