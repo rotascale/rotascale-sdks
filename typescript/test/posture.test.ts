@@ -44,7 +44,7 @@ const ALLOW = {
 
 describe("enforcement fails closed", () => {
   it("throws rather than allowing when Rotascale cannot be reached", async () => {
-    const client = new Rotascale({ fetch: unreachable(), logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: unreachable(), logger: silent });
 
     await expect(client.authorize({ grantId: "grt_1" }))
       .rejects.toBeInstanceOf(EnforcementUnavailable);
@@ -52,8 +52,7 @@ describe("enforcement fails closed", () => {
 
   it("fails open only when explicitly told to, and says so loudly", async () => {
     const logger = { error: vi.fn(), warn: vi.fn() };
-    const client = new Rotascale({
-      fetch: unreachable(), logger, failOpenEnforcement: true,
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: unreachable(), logger, failOpenEnforcement: true,
     });
 
     const decision = await client.authorize({ grantId: "grt_1" });
@@ -101,7 +100,7 @@ describe("a reused external_ref does not silently eat evidence", () => {
 
   it("warns when the ref names an already-closed trajectory", async () => {
     const logger = { error: vi.fn(), warn: vi.fn() };
-    const client = new Rotascale({ fetch: reopened("completed"), logger });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: reopened("completed"), logger });
 
     await client.openTrajectory({ agentId: "agt_1", externalRef: "TICKET-1" });
 
@@ -110,14 +109,14 @@ describe("a reused external_ref does not silently eat evidence", () => {
   });
 
   it("says so through `recording`, so a caller can check", async () => {
-    const client = new Rotascale({ fetch: reopened("completed"), logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: reopened("completed"), logger: silent });
     const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "T" });
     expect(t!.recording).toBe(false);
   });
 
   it("does not fire steps that would be refused anyway", async () => {
     const fetchMock = reopened("completed");
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
     const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "T" });
 
     await t!.step({ kind: "llm_call" });
@@ -131,7 +130,7 @@ describe("a reused external_ref does not silently eat evidence", () => {
   it("records normally when the trajectory is genuinely open", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => new Response(
       JSON.stringify({ id: "trj_1", status: "open" }), { status: 200 }));
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
 
     const t = await client.openTrajectory({ agentId: "agt_1", externalRef: "NEW" });
     expect(t!.recording).toBe(true);
@@ -142,8 +141,7 @@ describe("a reused external_ref does not silently eat evidence", () => {
 
 describe("a refusal is not an outage", () => {
   it("does not fail open when the server answered", async () => {
-    const client = new Rotascale({
-      fetch: serving({ detail: "grant not found" }, false),
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: serving({ detail: "grant not found" }, false),
       failOpenEnforcement: true,
       logger: silent,
     });
@@ -153,16 +151,14 @@ describe("a refusal is not an outage", () => {
   });
 
   it("reports the status, so a caller can tell 404 from 500", async () => {
-    const client = new Rotascale({
-      fetch: serving({ detail: "grant not found" }, false), logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: serving({ detail: "grant not found" }, false), logger: silent });
 
     await expect(client.authorize({ grantId: "grt_nope" }))
       .rejects.toMatchObject({ status: 500 });
   });
 
   it("still fails open on a genuine transport failure", async () => {
-    const client = new Rotascale({
-      fetch: unreachable(), failOpenEnforcement: true, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: unreachable(), failOpenEnforcement: true, logger: silent });
 
     const d = await client.authorize({ grantId: "grt_1" });
     expect(d.allowed).toBe(true);
@@ -173,7 +169,7 @@ describe("a refusal is not an outage", () => {
 describe("capture fails open", () => {
   it("returns null rather than throwing when a trajectory cannot be opened",
     async () => {
-      const client = new Rotascale({ fetch: unreachable(), logger: silent });
+      const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: unreachable(), logger: silent });
       // Losing evidence is bad; taking down a customer's agent is worse.
       await expect(client.openTrajectory({ agentId: "agt_1" }))
         .resolves.toBeNull();
@@ -194,7 +190,7 @@ describe("capture fails open", () => {
     });
 
     const logger = { error: vi.fn(), warn: vi.fn() };
-    const client = new Rotascale({ fetch: flaky, logger });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: flaky, logger });
     const trajectory = await client.openTrajectory({ agentId: "agt_1" });
     expect(trajectory).not.toBeNull();
 
@@ -215,8 +211,7 @@ describe("a refusal's TYPE tells the caller the remedy", () => {
     ["review_async", ReviewRequired],
     ["deny", Blocked],
   ])("%s throws %s", async (outcome, type) => {
-    const client = new Rotascale({
-      fetch: serving({ outcome, allowed: false, reason: "no", grant_id: "grt_1",
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: serving({ outcome, allowed: false, reason: "no", grant_id: "grt_1",
                        enforcement_mode: "enforce" }),
       logger: silent,
     });
@@ -226,8 +221,7 @@ describe("a refusal's TYPE tells the caller the remedy", () => {
   });
 
   it("returns the refusal instead when asked to", async () => {
-    const client = new Rotascale({
-      fetch: serving({ outcome: "deny", allowed: false, reason: "out of scope" }),
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: serving({ outcome: "deny", allowed: false, reason: "out of scope" }),
       logger: silent,
     });
 
@@ -290,8 +284,7 @@ describe("enforcing and suppressed", () => {
 
   it("warns once per grant, not once per decision", async () => {
     const logger = { error: vi.fn(), warn: vi.fn() };
-    const client = new Rotascale({
-      fetch: serving({ ...ALLOW, enforcement_mode: "observe" }), logger,
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: serving({ ...ALLOW, enforcement_mode: "observe" }), logger,
     });
 
     await client.authorize({ grantId: "grt_1" });
@@ -309,7 +302,7 @@ describe("enforcing and suppressed", () => {
 describe("the request it actually sends", () => {
   it("puts stakes_minor inside the action, where the bounds read it", async () => {
     const fetchMock = serving(ALLOW);
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
 
     await client.authorize({
       grantId: "grt_1", scope: { tools: ["issue_refund"] },
@@ -324,7 +317,7 @@ describe("the request it actually sends", () => {
 
   it("does not mark a source trusted unless the caller says so", async () => {
     const fetchMock = serving({ id: "trj_1" });
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
     const trajectory = await client.openTrajectory({ agentId: "agt_1" });
     await trajectory!.step({ kind: "retrieval", sourceRef: "upload:DOC" });
 
@@ -336,11 +329,45 @@ describe("the request it actually sends", () => {
 
   it("sends the incumbent decision for a shadow run", async () => {
     const fetchMock = serving(ALLOW);
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
 
     await client.authorize({ grantId: "grt_1", incumbentDecision: "allow" });
 
     const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
     expect(body.incumbent_decision).toBe("allow");
+  });
+});
+
+describe("base URL", () => {
+  // subhadipmitra@: The regression this file exists to prevent. The client used
+  // to default to https://api.rotascale.com, which does not exist and answers
+  // 404, for a product that runs single-tenant inside the customer's
+  // environment. Every test passed against it because fetch was mocked, so the
+  // only place it could fail was somebody's first real integration.
+  it("throws rather than defaulting to a hosted URL", () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env ?? {};
+    const url = env.ROTASCALE_URL;
+    const apiUrl = env.ROTASCALE_API_URL;
+    delete env.ROTASCALE_URL;
+    delete env.ROTASCALE_API_URL;
+    try {
+      expect(() => new Rotascale({ logger: silent })).toThrow(/no base URL/);
+    } finally {
+      if (url) env.ROTASCALE_URL = url;
+      if (apiUrl) env.ROTASCALE_API_URL = apiUrl;
+    }
+  });
+
+  it("reads ROTASCALE_URL, the same variable the Python client reads", () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env ?? {};
+    env.ROTASCALE_URL = "https://from-env.test";
+    try {
+      const c = new Rotascale({ logger: silent });
+      expect((c as unknown as { baseUrl: string }).baseUrl).toBe("https://from-env.test");
+    } finally {
+      delete env.ROTASCALE_URL;
+    }
   });
 });

@@ -28,7 +28,12 @@ import {
 } from "./errors.js";
 
 export interface RotascaleOptions {
-  /** Defaults to `ROTASCALE_API_URL`, then `https://api.rotascale.com`. */
+  /**
+   * Your deployment. Required.
+   *
+   * Read from `ROTASCALE_URL`, then `ROTASCALE_API_URL`, and the constructor
+   * throws if neither is set.
+   */
   baseUrl?: string;
   /** Defaults to `ROTASCALE_API_KEY`. */
   apiKey?: string;
@@ -68,7 +73,36 @@ export interface AuthorizeOptions {
   action?: Record<string, unknown>;
 }
 
-const DEFAULT_BASE = "https://api.rotascale.com";
+/**
+ * subhadipmitra@: There is no default, and there cannot be one.
+ *
+ * This used to fall back to `https://api.rotascale.com`, which does not exist
+ * and answers 404. RotaGrant runs single-tenant inside the customer's
+ * environment, so a hosted URL cannot be right for anybody: the fallback could
+ * only ever produce a confusing failure some distance from its cause.
+ *
+ * `ROTASCALE_URL` first, because that is what the Python client reads and a
+ * team running both in one deployment should not have to set two variables
+ * that mean the same thing. `ROTASCALE_API_URL` stays supported so this is not
+ * a breaking change for anybody who already set it.
+ *
+ * Throwing beats defaulting. A governance layer that silently talks to the
+ * wrong deployment is worse than one that refuses to start.
+ */
+function resolveBaseUrl(
+  explicit: string | undefined,
+  env: Record<string, string | undefined>,
+): string {
+  const url = explicit ?? env.ROTASCALE_URL ?? env.ROTASCALE_API_URL;
+  if (!url) {
+    throw new Error(
+      "rotascale: no base URL. Pass `baseUrl`, or set ROTASCALE_URL " +
+        "(or ROTASCALE_API_URL) to your deployment. There is no hosted " +
+        "endpoint: RotaGrant runs inside your own environment.",
+    );
+  }
+  return url;
+}
 
 export class Rotascale {
   private readonly baseUrl: string;
@@ -82,7 +116,7 @@ export class Rotascale {
   constructor(options: RotascaleOptions = {}) {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
       .process?.env ?? {};
-    this.baseUrl = (options.baseUrl ?? env.ROTASCALE_API_URL ?? DEFAULT_BASE)
+    this.baseUrl = resolveBaseUrl(options.baseUrl, env)
       .replace(/\/+$/, "");
     this.apiKey = options.apiKey ?? env.ROTASCALE_API_KEY;
     this.enforcementTimeoutMs = options.enforcementTimeoutMs ?? 5_000;

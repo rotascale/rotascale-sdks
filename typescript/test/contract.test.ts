@@ -92,7 +92,7 @@ describe("the authorize body matches AuthorizeIn", () => {
     const spec = required("AuthorizeIn");
 
     const fetchMock = ok({ outcome: "allow", allowed: true, reason: "ok" });
-    const client = new Rotascale({ fetch: fetchMock, logger: { error() {}, warn() {} } });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: { error() {}, warn() {} } });
 
     // Deliberately the MINIMAL call: no amount, no currency, no trajectory.
     // That is the one that was broken, and the one most callers make first.
@@ -110,7 +110,7 @@ describe("the authorize body matches AuthorizeIn", () => {
     // The exact defect. `AuthorizeIn.amount_minor` is a non-optional int with
     // a default, so null is a 422 and an absent field is fine.
     const fetchMock = ok({ outcome: "allow", allowed: true, reason: "ok" });
-    const client = new Rotascale({ fetch: fetchMock, logger: { error() {}, warn() {} } });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: { error() {}, warn() {} } });
 
     await client.authorize({ grantId: "grt_1" });
 
@@ -121,7 +121,7 @@ describe("the authorize body matches AuthorizeIn", () => {
     const spec = required("AuthorizeIn");
 
     const fetchMock = ok({ outcome: "allow", allowed: true, reason: "ok" });
-    const client = new Rotascale({ fetch: fetchMock, logger: { error() {}, warn() {} } });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: { error() {}, warn() {} } });
     await client.authorize({
       grantId: "grt_1", amountMinor: 100, currency: "EUR",
       trajectoryId: "trj_1", incumbentDecision: "allow",

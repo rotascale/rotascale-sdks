@@ -41,7 +41,7 @@ function recorder() {
 
 async function run(fn: (t: any) => Promise<void>) {
   const { steps, fetchMock } = recorder();
-  const client = new Rotascale({ fetch: fetchMock, logger: silent });
+  const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
   const trajectory = await client.openTrajectory({ agentId: "agt_1" });
   await witness(trajectory, async () => fn(trajectory));
   return steps;
@@ -181,7 +181,7 @@ describe("capture never breaks the agent", () => {
 
     const steps: Array<Record<string, unknown>> = [];
     const { fetchMock, steps: captured } = recorder();
-    const client = new Rotascale({ fetch: fetchMock, logger: silent });
+    const client = new Rotascale({ baseUrl: "https://rotagrant.test",fetch: fetchMock, logger: silent });
     const trajectory = await client.openTrajectory({ agentId: "agt_1" });
 
     await witness(trajectory, async () => {
