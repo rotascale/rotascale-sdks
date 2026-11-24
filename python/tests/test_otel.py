@@ -72,4 +72,4 @@ def test_the_tainting_kinds_are_the_ones_the_receiver_never_infers():
     """Pinned deliberately. If a kind is added to TAINTING here without the
     receiver's inference table agreeing, one side taints and the other does
     not, and the disagreement shows up as a gate that fires inconsistently."""
-    assert TAINTING == {"tool_call", "retrieval", "delegation"}
+    assert {"tool_call", "retrieval", "delegation"} == TAINTING
