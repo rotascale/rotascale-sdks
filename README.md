@@ -1,12 +1,17 @@
 # rotascale-sdks
 
-Client libraries for [Rotascale](https://github.com/rotascale/rotascale-console) —
-agent governance.
+Client libraries for [Rotascale](https://rotascale.com): agent governance.
 
-| SDK | Status | Package |
+| Package | Published as | Install |
 |---|---|---|
-| [`python/`](python) | in use | `rotascale` |
-| `typescript/` | not built — [#63](https://github.com/rotascale/rotascale-console/issues/63) | `@rotascale/sdk` |
+| [`python/`](python) | [`rotascale`](https://pypi.org/project/rotascale/) on PyPI | `pip install rotascale` |
+| [`mcp-python/`](mcp-python) | [`rotascale-mcp`](https://pypi.org/project/rotascale-mcp/) on PyPI | `pip install rotascale-mcp` |
+| [`typescript/`](typescript) | [`@rotascale/sdk`](https://www.npmjs.com/package/@rotascale/sdk) on npm | `npm install @rotascale/sdk` |
+
+[`npm-name/`](npm-name) holds the unscoped npm name `rotascale` and points at
+`@rotascale/sdk`. It contains no code.
+
+Every package is licensed under [Apache 2.0](LICENSE).
 
 ## Why this is a separate repository
 
@@ -39,7 +44,10 @@ Both clients speak to the same API and must agree on it. Where a governance fact
 is derived — a count, a rate, a status — it is derived on the **server**, so two
 clients cannot report different answers from the same data.
 
-See [`docs/concepts/`](https://github.com/rotascale/rotascale-console/tree/main/docs/concepts)
-for what the primitives mean, and
-[`09-integration.md`](https://github.com/rotascale/rotascale-console/blob/main/docs/rotascale-strategy/09-integration.md)
-for how integration is meant to work.
+See [the documentation](https://docs.rotascale.com) for what the primitives mean, and the
+[quickstart](https://docs.rotascale.com/quickstart) for a first governed call.
+
+## Questions and defects
+
+[Open an issue here](https://github.com/rotascale/rotascale-sdks/issues). The platform's own
+repository is private, so an issue filed against a client belongs in this one.

@@ -39,7 +39,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://rotascale.com"
 Source = "https://github.com/rotascale/rotascale-sdks"
-Issues = "https://github.com/rotascale/rotascale-console/issues"
+Issues = "https://github.com/rotascale/rotascale-sdks/issues"
 
 [project.optional-dependencies]
 mcp = []          # duck-typed; no mcp dependency needed

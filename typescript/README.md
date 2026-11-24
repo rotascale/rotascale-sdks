@@ -1,6 +1,6 @@
 # @rotascale/sdk
 
-Govern the action, not the model.
+Autonomy, with authority. The TypeScript SDK for Rotascale agent governance.
 
 ```ts
 import { Rotascale } from "@rotascale/sdk";
